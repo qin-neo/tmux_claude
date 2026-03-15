@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+
+# 运行时生成的文件
+*.pid
+*.log
+*.log.*
+/tmp/
+
+# test 目录（运行时测试产生）
+test/
