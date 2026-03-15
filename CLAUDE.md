@@ -8,8 +8,9 @@ A tmux-based wrapper for managing multiple Claude CLI processes in the backgroun
 
 ## Components
 
-1. **tmux_claude.sh** — Session manager. No args lists active sessions; with a directory arg, creates a tmux session (named after the directory basename), cd's into that directory, and runs `claude --continue` (falls back to `claude` if no prior session). Automatically starts the log daemon. Supports `stop` command to tear down session and log daemon.
-2. **tmux_claude_log.py** — Pure background daemon (launched by `tmux_claude.sh`, not called directly). Monitors `~/.claude/projects/<project>/` JSONL files for changes → extracts user messages, assistant text, and tool-use summaries → writes to `RotatingFileHandler` (10MB per file, 100 backups). Writes a PID file for liveness detection. Exits gracefully on SIGTERM/SIGINT or when the tmux session ends.
+1. **tmux_claude.sh** — Session manager. No args lists active sessions; with a directory arg, creates a tmux session (named after the directory basename), cd's into that directory, and runs `claude --continue` (falls back to `claude` if no prior session). Automatically starts the log daemon or QQ Bot. Supports `stop` command to tear down session and log daemon.
+2. **tmux_claude_log.py** — Pure background daemon (launched by `tmux_claude.sh` when no QQ config). Monitors `~/.claude/projects/<project>/` JSONL files for changes → extracts user messages, assistant text, and tool-use summaries → writes to `RotatingFileHandler` (10MB per file, 100 backups). Writes a PID file for liveness detection. Exits gracefully on SIGTERM/SIGINT or when the tmux session ends.
+3. **qq_bot.py** — QQ Bot client (launched when `qq_bot_config.json` exists in project dir). Imports `ProjectWatcher` and `extract_message` from `tmux_claude_log.py`. Monitors JSONL files → writes log + sends Claude replies to QQ. Only C2C messaging is verified.
 
 ## Running
 
@@ -20,6 +21,15 @@ A tmux-based wrapper for managing multiple Claude CLI processes in the backgroun
 # Start a new session in a project directory (auto-attaches)
 ./tmux_claude.sh /path/to/project
 
+# Start with auto-approve mode (all_yes)
+./tmux_claude.sh /path/to/project all_yes
+
+# Start in background mode (no auto-attach)
+./tmux_claude.sh /path/to/project --daemon
+
+# Combine: auto-approve + background mode
+./tmux_claude.sh /path/to/project all_yes --daemon
+
 # Stop a session and its log daemon
 ./tmux_claude.sh /path/to/project stop
 ```
@@ -29,7 +39,6 @@ A tmux-based wrapper for managing multiple Claude CLI processes in the backgroun
 Given session name `<name>` and directory `<dir>`:
 - JSONL source: `~/.claude/projects/<dir_with_slashes_replaced_by_dashes>/`
 - Log file: `<dir>/tmux_claude.log` (+ `.1` .. `.100` rotated backups)
-- PID file: `<dir>/tmux_claude.pid`
 
 ## Dependencies
 

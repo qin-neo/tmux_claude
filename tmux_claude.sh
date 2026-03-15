@@ -160,13 +160,18 @@ if [[ -f "$QQ_CONFIG" ]]; then
     QQ_SCRIPT="$SCRIPT_DIR/qq_bot.py"
     if [[ -f "$QQ_SCRIPT" ]]; then
         stop_qq_bot "$SESSION_NAME"
-        nohup python3 "$QQ_SCRIPT" \
-            --project-dir "$DIR_ABS" \
-            --session "$SESSION_NAME" \
-            --log-dir "$DIR_ABS" \
-            --claude-dir "$CLAUDE_DIR" \
-            --config "$QQ_CONFIG" \
-            > /dev/null 2>&1 &
+        QQ_ARGS=(
+            --project-dir "$DIR_ABS"
+            --session "$SESSION_NAME"
+            --log-dir "$DIR_ABS"
+            --claude-dir "$CLAUDE_DIR"
+            --config "$QQ_CONFIG"
+        )
+        if [[ "$AUTO_APPROVE" == "true" ]]; then
+            QQ_ARGS+=(--auto-approve)
+            echo "已启用自动确认模式 (all_yes)"
+        fi
+        nohup python3 "$QQ_SCRIPT" "${QQ_ARGS[@]}" > /dev/null 2>&1 &
         echo "已启动 QQ Bot (PID: $!)"
         echo "日志文件: $DIR_ABS/tmux_claude.log"
     else

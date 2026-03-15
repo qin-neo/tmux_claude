@@ -9,12 +9,14 @@
 - 支持自动确认权限请求（all_yes 模式）
 - 日志文件自动轮转（单文件 10MB，最多保留 100 个备份）
 - 会话结束后自动退出守护进程
+- **QQ Bot 集成** - 通过 QQ 消息远程控制 Claude
 
 ## 依赖
 
 - **tmux** - 终端复用器
-- **Python 3** - 仅使用标准库，无需额外安装第三方包
+- **Python 3** - 仅使用标准库（QQ Bot 需额外安装 qq-botpy）
 - **Claude CLI** - `npm install -g @anthropic-ai/claude-code`
+- **qq-botpy**（可选）- `pip install qq-botpy`
 
 ## 安装
 
@@ -41,14 +43,38 @@ ln -s $(pwd)/tmux_claude.sh /usr/local/bin/tmux_claude
 
 # 停止会话及其日志守护进程
 ./tmux_claude.sh /path/to/project stop
+
+# 后台模式启动（不附加到 tmux）
+./tmux_claude.sh /path/to/project --daemon
+
+# 组合：自动确认 + 后台模式
+./tmux_claude.sh /path/to/project all_yes --daemon
 ```
+
+### QQ Bot 远程控制（实验性）
+
+在项目目录下创建 `qq_bot_config.json`：
+
+```json
+{
+    "appid": "YOUR_APP_ID",
+    "secret": "YOUR_BOT_SECRET",
+    "test_c2c_openid": null
+}
+```
+
+启动时检测到配置文件会自动启动 QQ Bot。目前仅验证了 C2C 单聊功能：发送消息到 QQ 即可远程控制 Claude，Claude 的回复会自动发送回 QQ。
+
+首次使用时，`test_c2c_openid` 可留空，Bot 会在收到第一条 C2C 消息时自动记录发送者的 openid。
 
 ## 文件说明
 
 | 文件 | 说明 |
 |------|------|
 | `tmux_claude.sh` | 会话管理脚本 |
-| `tmux_claude_log.py` | 日志守护进程（由脚本自动调用） |
+| `tmux_claude_log.py` | 日志守护进程（无 QQ 配置时使用） |
+| `qq_bot.py` | QQ Bot 客户端（有 QQ 配置时使用） |
+| `qq_bot_config.json.example` | QQ Bot 配置模板 |
 
 ## 日志文件位置
 

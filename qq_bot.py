@@ -12,6 +12,7 @@ QQ Bot for tmux_claude - QQ 远程控制 Claude CLI
 import sys
 import os
 import json
+import time
 import asyncio
 import argparse
 import subprocess
@@ -19,17 +20,19 @@ import logging
 from logging.handlers import RotatingFileHandler
 
 # 复用 tmux_claude_log.py 的核心组件
-from tmux_claude_log import ProjectWatcher, extract_message, project_dir_to_internal
+from tmux_claude_log import ProjectWatcher, extract_message, project_dir_to_internal, send_approve
 
 try:
     import botpy
-    from botpy.message import Message, DirectMessage
 except ImportError:
     print("错误: 未安装 qq-botpy，请运行: pip install qq-botpy", file=sys.stderr)
     sys.exit(1)
 
 # 最大回复长度（QQ 消息限制）
 MAX_MESSAGE_LENGTH = 2000
+
+# tmux session 检查间隔
+SESSION_CHECK_INTERVAL = 10.0
 
 
 def send_to_tmux(session, text):
@@ -55,22 +58,19 @@ def setup_log_file(log_file):
 class ClaudeBot(botpy.Client):
     """QQ Bot 客户端"""
 
-    def __init__(self, session, watcher, log_handler, logger, **kwargs):
+    def __init__(self, session, watcher, log_handler, logger, auto_approve=False, **kwargs):
         super().__init__(**kwargs)
         self.session = session
         self.watcher = watcher
         self.log_handler = log_handler
         self._check_interval = 0.5
         self._external_logger = logger
-        self._test_channel_id = None
-        self._test_group_id = None
+        self._auto_approve = auto_approve
         self._test_c2c_openid = None
         self._config_path = None
 
-    def set_test_target(self, channel_id=None, group_id=None, c2c_openid=None, config_path=None):
+    def set_test_target(self, c2c_openid=None, config_path=None):
         """设置测试消息目标"""
-        self._test_channel_id = channel_id
-        self._test_group_id = group_id
         self._test_c2c_openid = c2c_openid
         self._config_path = config_path
 
@@ -84,11 +84,12 @@ class ClaudeBot(botpy.Client):
         """常驻监听协程：监听 JSONL → 写 log → 发送给用户"""
         self._external_logger.info("启动常驻监听协程")
         state = {}
+        last_session_check = time.monotonic()
 
         while True:
             try:
                 for obj in self.watcher.poll(timeout=self._check_interval):
-                    lines, _ = extract_message(obj, state)
+                    lines, needs_approve = extract_message(obj, state)
                     for line in lines:
                         self.log_handler.emit(logging.LogRecord(
                             name="claude_log", level=logging.INFO,
@@ -110,6 +111,17 @@ class ClaudeBot(botpy.Client):
                         elif line.startswith("[TOOL ERROR]"):
                             await self._send_to_user(f"[工具错误] {line[len('[TOOL ERROR]'):].strip()[:200]}...")
 
+                    if needs_approve and self._auto_approve:
+                        send_approve(self.session)
+                        self._external_logger.info("[tmux_claude auto approve]")
+
+                now = time.monotonic()
+                if now - last_session_check >= SESSION_CHECK_INTERVAL:
+                    last_session_check = now
+                    if not check_tmux_session(self.session):
+                        self._external_logger.info(f"tmux session '{self.session}' 已结束，退出")
+                        break
+
                 await asyncio.sleep(self._check_interval)
             except Exception as e:
                 self._external_logger.error(f"监听协程错误: {e}")
@@ -117,100 +129,38 @@ class ClaudeBot(botpy.Client):
 
     async def _send_to_user(self, text):
         """发送消息给配置的用户"""
+        if not self._test_c2c_openid:
+            return
+
         chunks = self._split_message(text)
 
         for chunk in chunks:
             try:
-                if self._test_c2c_openid:
-                    await self.api.post_c2c_message(
-                        openid=self._test_c2c_openid,
-                        content=chunk
-                    )
-                    self._external_logger.info(f"已发送C2C消息 ({len(chunk)} 字符)")
-                elif self._test_channel_id:
-                    await self.api.post_message(
-                        channel_id=self._test_channel_id,
-                        content=chunk
-                    )
-                    self._external_logger.info(f"已发送频道消息 ({len(chunk)} 字符)")
-                elif self._test_group_id:
-                    await self.api.post_group_message(
-                        group_openid=self._test_group_id,
-                        content=chunk
-                    )
-                    self._external_logger.info(f"已发送群消息 ({len(chunk)} 字符)")
+                await self.api.post_c2c_message(
+                    openid=self._test_c2c_openid,
+                    content=chunk
+                )
+                self._external_logger.info(f"已发送C2C消息 ({len(chunk)} 字符)")
                 await asyncio.sleep(0.5)
             except Exception as e:
                 self._external_logger.error(f"发送消息失败: {e}")
 
     async def _send_online_notification(self):
-        """发送上线通知到指定频道/群/用户"""
-        import asyncio
-        await asyncio.sleep(1)
+        """发送上线通知到用户"""
+        if not self._test_c2c_openid:
+            return
 
+        await asyncio.sleep(1)
         msg = f"🤖 Claude Bot 已上线！session: {self.session}"
 
-        if self._test_channel_id:
-            try:
-                await self.api.post_message(
-                    channel_id=self._test_channel_id,
-                    content=msg
-                )
-                self._external_logger.info(f"已发送上线通知到频道: {self._test_channel_id}")
-            except Exception as e:
-                self._external_logger.error(f"发送频道消息失败: {e}")
-
-        if self._test_group_id:
-            try:
-                await self.api.post_group_message(
-                    group_openid=self._test_group_id,
-                    content=msg
-                )
-                self._external_logger.info(f"已发送上线通知到群: {self._test_group_id}")
-            except Exception as e:
-                self._external_logger.error(f"发送群消息失败: {e}")
-
-        if self._test_c2c_openid:
-            try:
-                await self.api.post_c2c_message(
-                    openid=self._test_c2c_openid,
-                    content=msg
-                )
-                self._external_logger.info(f"已发送上线通知到用户: {self._test_c2c_openid}")
-            except Exception as e:
-                self._external_logger.error(f"发送C2C消息失败: {e}")
-
-    async def on_at_message_create(self, message: Message):
-        """处理频道 @ 消息"""
-        self._external_logger.info(f"收到频道消息: {message.content}")
-        content = message.content
-        if hasattr(message, "mentions") and message.mentions:
-            for mention in message.mentions:
-                content = content.replace(f"<@!{mention.id}>", "").strip()
-        content = content.strip()
-        if content:
-            self._external_logger.info(f"发送到 tmux [{self.session}]: {content}")
-            send_to_tmux(self.session, content)
-
-    async def on_group_at_message_create(self, message: Message):
-        """处理群 @ 消息"""
-        self._external_logger.info(f"收到群消息: {message.content}")
-        content = message.content
-        if hasattr(message, "mentions") and message.mentions:
-            for mention in message.mentions:
-                content = content.replace(f"<@!{mention.id}>", "").strip()
-        content = content.strip()
-        if content:
-            self._external_logger.info(f"发送到 tmux [{self.session}]: {content}")
-            send_to_tmux(self.session, content)
-
-    async def on_direct_message_create(self, message: DirectMessage):
-        """处理私聊消息"""
-        self._external_logger.info(f"收到私聊消息: {message.content}")
-        content = message.content.strip()
-        if content:
-            self._external_logger.info(f"发送到 tmux [{self.session}]: {content}")
-            send_to_tmux(self.session, content)
+        try:
+            await self.api.post_c2c_message(
+                openid=self._test_c2c_openid,
+                content=msg
+            )
+            self._external_logger.info(f"已发送上线通知到用户: {self._test_c2c_openid}")
+        except Exception as e:
+            self._external_logger.error(f"发送C2C消息失败: {e}")
 
     async def on_c2c_message_create(self, message):
         """处理 C2C 单聊消息"""
@@ -310,6 +260,7 @@ def main():
     parser.add_argument("--log-dir", required=True, help="log 文件存放目录")
     parser.add_argument("--claude-dir", required=True, help="claude 数据目录 (~/.claude)")
     parser.add_argument("--config", required=True, help="QQ Bot 配置文件路径")
+    parser.add_argument("--auto-approve", action="store_true", help="自动确认所有权限请求")
     args = parser.parse_args()
 
     project_dir = os.path.abspath(args.project_dir)
@@ -324,8 +275,6 @@ def main():
 
     appid = config.get("appid")
     secret = config.get("secret")
-    test_channel_id = config.get("test_channel_id")
-    test_group_id = config.get("test_group_id")
     test_c2c_openid = config.get("test_c2c_openid")
 
     if not appid or not secret:
@@ -355,7 +304,6 @@ def main():
 
     # 创建 Bot
     intents = botpy.Intents(
-        public_guild_messages=True,
         public_messages=True,
         direct_message=True,
     )
@@ -365,12 +313,11 @@ def main():
         watcher=watcher,
         log_handler=log_handler,
         logger=logger,
+        auto_approve=args.auto_approve,
         intents=intents,
     )
 
     client.set_test_target(
-        channel_id=test_channel_id,
-        group_id=test_group_id,
         c2c_openid=test_c2c_openid,
         config_path=args.config,
     )
