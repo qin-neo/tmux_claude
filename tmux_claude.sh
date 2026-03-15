@@ -32,9 +32,10 @@ usage() {
     echo "用法: $0 <目录> [stop|all_yes]"
     echo "  <目录>    claude 的工作目录，同时作为 tmux session 名"
     echo "  all_yes   自动确认所有权限请求"
-    echo "  stop      停止指定的 tmux session 和 log 守护进程"
+    echo "  stop      停止指定的 tmux session、log 守护进程和 QQ Bot"
     echo ""
     echo "Claude 命令: $CLAUDE_CMD"
+    echo "QQ Bot: 若存在 qq_bot_config.json 则自动启动"
     echo "加入 PATH: ln -s $SCRIPT_DIR/tmux_claude.sh /usr/local/bin/tmux_claude"
 }
 
@@ -46,6 +47,17 @@ stop_log_daemon() {
     if [[ -n "$pid" ]]; then
         kill $pid
         echo "已停止 log 守护进程 (PID: $pid)"
+    fi
+}
+
+# 停止 QQ Bot
+stop_qq_bot() {
+    local session="$1"
+    local pid
+    pid=$(pgrep -f "qq_bot.py --.*--session $session\\b" 2>/dev/null)
+    if [[ -n "$pid" ]]; then
+        kill $pid
+        echo "已停止 QQ Bot (PID: $pid)"
     fi
 }
 
@@ -89,6 +101,7 @@ if [[ "$ACTION" == "stop" ]]; then
         echo "tmux 会话 '$SESSION_NAME' 不存在"
     fi
     stop_log_daemon "$SESSION_NAME"
+    stop_qq_bot "$SESSION_NAME"
     exit 0
 fi
 
@@ -127,6 +140,24 @@ fi
 nohup python3 "$LOG_SCRIPT" "${LOG_ARGS[@]}" > /dev/null 2>&1 &
 echo "已启动 log 守护进程 (PID: $!)"
 echo "日志文件: $DIR_ABS/tmux_claude.log"
+
+# 启动 QQ Bot（如果配置存在）
+QQ_CONFIG="$SCRIPT_DIR/qq_bot_config.json"
+if [[ -f "$QQ_CONFIG" ]]; then
+    QQ_SCRIPT="$SCRIPT_DIR/qq_bot.py"
+    if [[ -f "$QQ_SCRIPT" ]]; then
+        nohup python3 "$QQ_SCRIPT" \
+            --project-dir "$DIR_ABS" \
+            --session "$SESSION_NAME" \
+            --log-dir "$DIR_ABS" \
+            --claude-dir "$CLAUDE_DIR" \
+            --config "$QQ_CONFIG" \
+            > /dev/null 2>&1 &
+        echo "已启动 QQ Bot (PID: $!)"
+    else
+        echo "警告: 找不到 $QQ_SCRIPT，跳过 QQ Bot"
+    fi
+fi
 
 echo ""
 exec tmux -u attach -d -t "$SESSION_NAME"
