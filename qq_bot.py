@@ -58,8 +58,8 @@ class ClaudeBot(botpy.Client):
     def __init__(self, session, watcher, log_handler, logger, **kwargs):
         super().__init__(**kwargs)
         self.session = session
-        self.watcher = watcher  # ProjectWatcher 实例
-        self.log_handler = log_handler  # log 文件 handler
+        self.watcher = watcher
+        self.log_handler = log_handler
         self._check_interval = 0.5
         self._external_logger = logger
         self._test_channel_id = None
@@ -77,9 +77,7 @@ class ClaudeBot(botpy.Client):
     async def on_ready(self):
         """Bot 就绪"""
         self._external_logger.info(f"Claude Bot 已就绪，session: {self.session}")
-        # 发送上线通知
         await self._send_online_notification()
-        # 启动常驻监听协程
         asyncio.create_task(self._listen_forever())
 
     async def _listen_forever(self):
@@ -92,13 +90,11 @@ class ClaudeBot(botpy.Client):
                 for obj in self.watcher.poll(timeout=self._check_interval):
                     lines, _ = extract_message(obj, state)
                     for line in lines:
-                        # 写入 log 文件
                         self.log_handler.emit(logging.LogRecord(
                             name="claude_log", level=logging.INFO,
                             pathname="", lineno=0, msg=line,
                             args=(), exc_info=None
                         ))
-                        # 发送给用户
                         if line.startswith("[ASSISTANT]"):
                             text = line[len("[ASSISTANT]"):].strip()
                             if text:
@@ -126,7 +122,6 @@ class ClaudeBot(botpy.Client):
         for chunk in chunks:
             try:
                 if self._test_c2c_openid:
-                    # 使用 api 发送 C2C 消息
                     await self.api.post_c2c_message(
                         openid=self._test_c2c_openid,
                         content=chunk
@@ -151,12 +146,10 @@ class ClaudeBot(botpy.Client):
     async def _send_online_notification(self):
         """发送上线通知到指定频道/群/用户"""
         import asyncio
-        # 等待 1 秒确保连接稳定
         await asyncio.sleep(1)
 
         msg = f"🤖 Claude Bot 已上线！session: {self.session}"
 
-        # 发送到频道
         if self._test_channel_id:
             try:
                 await self.api.post_message(
@@ -167,7 +160,6 @@ class ClaudeBot(botpy.Client):
             except Exception as e:
                 self._external_logger.error(f"发送频道消息失败: {e}")
 
-        # 发送到群
         if self._test_group_id:
             try:
                 await self.api.post_group_message(
@@ -178,7 +170,6 @@ class ClaudeBot(botpy.Client):
             except Exception as e:
                 self._external_logger.error(f"发送群消息失败: {e}")
 
-        # 发送到 C2C 单聊用户
         if self._test_c2c_openid:
             try:
                 await self.api.post_c2c_message(
@@ -225,7 +216,6 @@ class ClaudeBot(botpy.Client):
         """处理 C2C 单聊消息"""
         self._external_logger.info(f"收到C2C消息: {message}")
 
-        # 提取并保存 openid
         openid = None
         if hasattr(message, 'author') and message.author:
             author = message.author
@@ -286,7 +276,6 @@ def setup_logging(log_file=None):
     logger = logging.getLogger("qq_bot")
     logger.setLevel(logging.INFO)
 
-    # 控制台输出
     console_handler = logging.StreamHandler(sys.stderr)
     console_handler.setLevel(logging.INFO)
     console_handler.setFormatter(
@@ -294,7 +283,6 @@ def setup_logging(log_file=None):
     )
     logger.addHandler(console_handler)
 
-    # 文件输出
     if log_file:
         file_handler = RotatingFileHandler(
             log_file, maxBytes=10 * 1024 * 1024, backupCount=10, encoding="utf-8"
@@ -327,7 +315,6 @@ def main():
     project_dir = os.path.abspath(args.project_dir)
     log_dir = os.path.abspath(args.log_dir)
 
-    # 检查配置文件
     if not os.path.exists(args.config):
         print(f"错误: 配置文件不存在: {args.config}", file=sys.stderr)
         sys.exit(1)
@@ -345,20 +332,16 @@ def main():
         print("错误: 配置文件缺少 appid 或 secret", file=sys.stderr)
         sys.exit(1)
 
-    # 检查 tmux session
     if not check_tmux_session(args.session):
         print(f"错误: tmux session '{args.session}' 不存在", file=sys.stderr)
         sys.exit(1)
 
-    # 设置日志
     log_file = os.path.join(log_dir, "qq_bot.log")
     logger = setup_logging(log_file)
 
-    # 设置 log 文件 handler (tmux_claude.log)
     claude_log_file = os.path.join(log_dir, "tmux_claude.log")
     log_handler = setup_log_file(claude_log_file)
 
-    # 初始化 ProjectWatcher
     internal_dir = os.path.join(args.claude_dir, "projects", project_dir_to_internal(project_dir))
     if not os.path.isdir(internal_dir):
         print(f"错误: claude 数据目录不存在: {internal_dir}", file=sys.stderr)
