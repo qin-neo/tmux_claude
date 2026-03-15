@@ -33,6 +33,39 @@ TURN_END_MARKER = re.compile(r"\[SYSTEM\] turn duration: \d+ms")
 # 最大回复长度（QQ 消息限制）
 MAX_MESSAGE_LENGTH = 2000
 
+# URL 过滤：转换为全角字符避免 QQ 拦截
+HALF_TO_FULL = {
+    ':': '：',
+    '/': '／',
+    '.': '．',
+    '-': '－',
+    '_': '＿',
+    '~': '～',
+    '?': '？',
+    '=': '＝',
+    '&': '＆',
+    '%': '％',
+    '@': '＠',
+}
+
+
+def sanitize_content(content):
+    """过滤消息内容，将 URL 转换为全角字符"""
+    def convert_url(match):
+        url = match.group(0)
+        for half, full in HALF_TO_FULL.items():
+            url = url.replace(half, full)
+        return url
+
+    # 匹配 http:// 或 https:// 开头的 URL
+    content = re.sub(r'https?://[^\s<>"{}|\\^`\[\]]+', convert_url, content)
+
+    # 匹配域名格式
+    tlds = r'(?:com|cn|net|org|io|ai|co|edu|gov|me|tv|cc|xyz|info|biz|top|vip|site|club|online|store|tech|fun|work|link|wang|shop|ltd|group|wiki|design|live|news|pub|pro|red|kim|space|ink|mobi|so|tm|us|uk|jp|kr|ru|de|fr|au|ca|br|in|mx|es|it|nl|se|no|ch|at|be|dk|fi|gr|ie|pt|tr|tw|hk|sg|my|th|vn|id|ph)'
+    content = re.sub(rf'[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?)*\.{tlds}(?:/[^\s]*)?', convert_url, content)
+
+    return content
+
 
 def project_dir_to_internal(project_dir):
     """/root/chcgw_probe → -root-chcgw-probe"""
@@ -52,14 +85,15 @@ def send_to_tmux(session, text):
 class LogWatcher:
     """监听 tmux_claude.log 文件变化"""
 
+    # 时间戳格式：2026-03-15 21:24:57,468
+    TIMESTAMP_PATTERN = re.compile(r'^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d{3} ')
+
     def __init__(self, log_file, skip_existing=True):
         self.log_file = log_file
         self.offset = os.path.getsize(log_file) if skip_existing and os.path.exists(log_file) else 0
-        self._last_check = 0
-        self._last_size = 0
 
     def read_new(self):
-        """读取新增内容，返回行列表"""
+        """读取新增内容，返回完整的日志条目列表（每条可能跨多行）"""
         if not os.path.exists(self.log_file):
             return []
 
@@ -81,12 +115,26 @@ class LogWatcher:
         except OSError:
             return []
 
-        lines = []
+        # 按时间戳分割日志条目
+        entries = []
+        current_entry = []
+
         for line in data.splitlines():
-            line = line.strip()
-            if line:
-                lines.append(line)
-        return lines
+            if self.TIMESTAMP_PATTERN.match(line):
+                # 新条目开始，保存之前的条目
+                if current_entry:
+                    entries.append("\n".join(current_entry))
+                current_entry = [line]
+            else:
+                # 续行，追加到当前条目
+                if current_entry:
+                    current_entry.append(line)
+
+        # 保存最后一个条目
+        if current_entry:
+            entries.append("\n".join(current_entry))
+
+        return entries
 
 
 class ClaudeBot(botpy.Client):
@@ -118,6 +166,76 @@ class ClaudeBot(botpy.Client):
         self._external_logger.info(f"Claude Bot 已就绪，session: {self.session}")
         # 发送上线通知
         await self._send_online_notification()
+        # 启动常驻监听协程
+        asyncio.create_task(self._listen_forever())
+
+    async def _listen_forever(self):
+        """常驻监听协程，持续读取日志并发送给用户"""
+        self._external_logger.info("启动常驻监听协程")
+        while True:
+            try:
+                entries = self.log_watcher.read_new()
+                for entry in entries:
+                    # 解析日志条目
+                    parts = entry.split(" INFO ", 1)
+                    if len(parts) < 2:
+                        continue
+
+                    log_content = parts[1]
+
+                    # 发送所有内容给用户
+                    if log_content.startswith("[ASSISTANT]"):
+                        text = log_content[len("[ASSISTANT]"):].strip()
+                        if text:
+                            await self._send_to_user(text)
+                    elif log_content.startswith("[USER]"):
+                        text = log_content[len("[USER]"):].strip()
+                        if text:
+                            await self._send_to_user(f"[用户] {text}")
+                    elif log_content.startswith("[TOOL USE]"):
+                        await self._send_to_user(f"[工具调用] {log_content[len('[TOOL USE]'):].strip()}")
+                    elif log_content.startswith("[TOOL RESULT]"):
+                        await self._send_to_user(f"[工具结果] {log_content[len('[TOOL RESULT]'):].strip()[:200]}...")
+                    elif log_content.startswith("[TOOL ERROR]"):
+                        await self._send_to_user(f"[工具错误] {log_content[len('[TOOL ERROR]'):].strip()[:200]}...")
+                    elif log_content.startswith("[SYSTEM]"):
+                        # turn duration 不发送，避免干扰
+                        pass
+
+                await asyncio.sleep(self._check_interval)
+            except Exception as e:
+                self._external_logger.error(f"监听协程错误: {e}")
+                await asyncio.sleep(1)
+
+    async def _send_to_user(self, text):
+        """发送消息给配置的用户"""
+        text = sanitize_content(text)
+        chunks = self._split_message(text)
+
+        for chunk in chunks:
+            try:
+                if self._test_c2c_openid:
+                    # 使用 api 发送 C2C 消息
+                    await self.api.post_c2c_message(
+                        openid=self._test_c2c_openid,
+                        content=chunk
+                    )
+                    self._external_logger.info(f"已发送C2C消息 ({len(chunk)} 字符)")
+                elif self._test_channel_id:
+                    await self.api.post_message(
+                        channel_id=self._test_channel_id,
+                        content=chunk
+                    )
+                    self._external_logger.info(f"已发送频道消息 ({len(chunk)} 字符)")
+                elif self._test_group_id:
+                    await self.api.post_group_message(
+                        group_openid=self._test_group_id,
+                        content=chunk
+                    )
+                    self._external_logger.info(f"已发送群消息 ({len(chunk)} 字符)")
+                await asyncio.sleep(0.5)
+            except Exception as e:
+                self._external_logger.error(f"发送消息失败: {e}")
 
     async def _send_online_notification(self):
         """发送上线通知到指定频道/群/用户"""
@@ -163,17 +281,34 @@ class ClaudeBot(botpy.Client):
     async def on_at_message_create(self, message: Message):
         """处理频道 @ 消息"""
         self._external_logger.info(f"收到频道消息: {message.content}")
-        await self._handle_message(message, message.channel_id, "channel")
+        content = message.content
+        if hasattr(message, "mentions") and message.mentions:
+            for mention in message.mentions:
+                content = content.replace(f"<@!{mention.id}>", "").strip()
+        content = content.strip()
+        if content:
+            self._external_logger.info(f"发送到 tmux [{self.session}]: {content}")
+            send_to_tmux(self.session, content)
 
     async def on_group_at_message_create(self, message: Message):
         """处理群 @ 消息"""
         self._external_logger.info(f"收到群消息: {message.content}")
-        await self._handle_message(message, message.group_id, "group")
+        content = message.content
+        if hasattr(message, "mentions") and message.mentions:
+            for mention in message.mentions:
+                content = content.replace(f"<@!{mention.id}>", "").strip()
+        content = content.strip()
+        if content:
+            self._external_logger.info(f"发送到 tmux [{self.session}]: {content}")
+            send_to_tmux(self.session, content)
 
     async def on_direct_message_create(self, message: DirectMessage):
         """处理私聊消息"""
         self._external_logger.info(f"收到私聊消息: {message.content}")
-        await self._handle_message(message, message.guild_id, "direct")
+        content = message.content.strip()
+        if content:
+            self._external_logger.info(f"发送到 tmux [{self.session}]: {content}")
+            send_to_tmux(self.session, content)
 
     async def on_c2c_message_create(self, message):
         """处理 C2C 单聊消息"""
@@ -191,10 +326,12 @@ class ClaudeBot(botpy.Client):
         if openid and openid != self._test_c2c_openid:
             self._test_c2c_openid = openid
             self._external_logger.info(f"记录用户 openid: {openid}")
-            # 保存到配置文件
             self._save_openid_to_config(openid)
 
-        await self._handle_c2c_message(message)
+        content = message.content.strip()
+        if content:
+            self._external_logger.info(f"发送到 tmux [{self.session}]: {content}")
+            send_to_tmux(self.session, content)
 
     def _save_openid_to_config(self, openid):
         """保存 openid 到配置文件"""
@@ -209,143 +346,6 @@ class ClaudeBot(botpy.Client):
                 self._external_logger.info(f"已保存 openid 到配置文件: {config_path}")
         except Exception as e:
             self._external_logger.error(f"保存 openid 失败: {e}")
-
-    async def _handle_message(self, message, target_id, msg_type):
-        """处理消息：发送到 tmux，等待回复"""
-        # 提取消息内容（去除 @ 部分）
-        content = message.content
-        if hasattr(message, "mentions") and message.mentions:
-            # 移除 @ 用户的部分
-            for mention in message.mentions:
-                content = content.replace(f"<@!{mention.id}>", "").strip()
-
-        content = content.strip()
-        if not content:
-            return
-
-        # 发送到 tmux
-        self._external_logger.info(f"发送到 tmux [{self.session}]: {content}")
-        send_to_tmux(self.session, content)
-
-        # 等待并收集回复
-        await self._wait_and_reply(message, target_id, msg_type)
-
-    async def _handle_c2c_message(self, message):
-        """处理 C2C 单聊消息"""
-        content = message.content.strip()
-        if not content:
-            return
-
-        # 发送到 tmux
-        self._external_logger.info(f"发送到 tmux [{self.session}]: {content}")
-        send_to_tmux(self.session, content)
-
-        # 等待并收集回复
-        await self._wait_and_reply_c2c(message)
-
-    async def _wait_and_reply(self, message, target_id, msg_type):
-        """等待 Claude 回复并发送"""
-        start_time = time.monotonic()
-        timeout = 120.0  # 最长等待 2 分钟
-        accumulated = []
-        last_activity = time.monotonic()
-
-        while time.monotonic() - start_time < timeout:
-            lines = self.log_watcher.read_new()
-            turn_ended = False
-
-            for line in lines:
-                # 解析日志行
-                # 格式: 2025-03-15 10:00:00,000 INFO [ASSISTANT] ...
-                parts = line.split(" INFO ", 1)
-                if len(parts) < 2:
-                    continue
-
-                log_content = parts[1]
-
-                # 收集 ASSISTANT 输出
-                if log_content.startswith("[ASSISTANT]"):
-                    text = log_content[len("[ASSISTANT]"):].strip()
-                    if text:
-                        accumulated.append(text)
-                    last_activity = time.monotonic()
-
-                # 检测对话结束
-                if TURN_END_MARKER.search(log_content):
-                    turn_ended = True
-                    last_activity = time.monotonic()
-
-            # 如果对话结束或超过冷却时间无新输出，发送回复
-            if turn_ended or (accumulated and time.monotonic() - last_activity > self._reply_cooldown):
-                break
-
-            await asyncio.sleep(self._check_interval)
-
-        # 发送收集到的回复
-        if accumulated:
-            reply_text = "\n".join(accumulated)
-            await self._send_reply(message, target_id, msg_type, reply_text)
-
-    async def _send_reply(self, message, target_id, msg_type, text):
-        """发送回复到 QQ"""
-        # 分割长消息
-        chunks = self._split_message(text)
-
-        for chunk in chunks:
-            try:
-                if msg_type == "channel":
-                    await message.reply(content=chunk)
-                elif msg_type == "group":
-                    await message.reply(content=chunk)
-                else:  # direct
-                    await message.reply(content=chunk)
-                self._external_logger.info(f"已发送回复 ({len(chunk)} 字符)")
-            except Exception as e:
-                self._external_logger.error(f"发送回复失败: {e}")
-
-    async def _wait_and_reply_c2c(self, message):
-        """等待 Claude 回复并发送 C2C 消息"""
-        start_time = time.monotonic()
-        timeout = 120.0  # 最长等待 2 分钟
-        accumulated = []
-        last_activity = time.monotonic()
-
-        while time.monotonic() - start_time < timeout:
-            lines = self.log_watcher.read_new()
-            turn_ended = False
-
-            for line in lines:
-                parts = line.split(" INFO ", 1)
-                if len(parts) < 2:
-                    continue
-
-                log_content = parts[1]
-
-                if log_content.startswith("[ASSISTANT]"):
-                    text = log_content[len("[ASSISTANT]"):].strip()
-                    if text:
-                        accumulated.append(text)
-                    last_activity = time.monotonic()
-
-                if TURN_END_MARKER.search(log_content):
-                    turn_ended = True
-                    last_activity = time.monotonic()
-
-            if turn_ended or (accumulated and time.monotonic() - last_activity > self._reply_cooldown):
-                break
-
-            await asyncio.sleep(self._check_interval)
-
-        # 发送收集到的回复
-        if accumulated:
-            reply_text = "\n".join(accumulated)
-            chunks = self._split_message(reply_text)
-            for chunk in chunks:
-                try:
-                    await message.reply(content=chunk)
-                    self._external_logger.info(f"已发送C2C回复 ({len(chunk)} 字符)")
-                except Exception as e:
-                    self._external_logger.error(f"发送C2C回复失败: {e}")
 
     def _split_message(self, text):
         """分割长消息"""
