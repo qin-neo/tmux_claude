@@ -33,39 +33,6 @@ TURN_END_MARKER = re.compile(r"\[SYSTEM\] turn duration: \d+ms")
 # 最大回复长度（QQ 消息限制）
 MAX_MESSAGE_LENGTH = 2000
 
-# URL 过滤：转换为全角字符避免 QQ 拦截
-HALF_TO_FULL = {
-    ':': '：',
-    '/': '／',
-    '.': '．',
-    '-': '－',
-    '_': '＿',
-    '~': '～',
-    '?': '？',
-    '=': '＝',
-    '&': '＆',
-    '%': '％',
-    '@': '＠',
-}
-
-
-def sanitize_content(content):
-    """过滤消息内容，将 URL 转换为全角字符"""
-    def convert_url(match):
-        url = match.group(0)
-        for half, full in HALF_TO_FULL.items():
-            url = url.replace(half, full)
-        return url
-
-    # 匹配 http:// 或 https:// 开头的 URL
-    content = re.sub(r'https?://[^\s<>"{}|\\^`\[\]]+', convert_url, content)
-
-    # 匹配域名格式
-    tlds = r'(?:com|cn|net|org|io|ai|co|edu|gov|me|tv|cc|xyz|info|biz|top|vip|site|club|online|store|tech|fun|work|link|wang|shop|ltd|group|wiki|design|live|news|pub|pro|red|kim|space|ink|mobi|so|tm|us|uk|jp|kr|ru|de|fr|au|ca|br|in|mx|es|it|nl|se|no|ch|at|be|dk|fi|gr|ie|pt|tr|tw|hk|sg|my|th|vn|id|ph)'
-    content = re.sub(rf'[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?)*\.{tlds}(?:/[^\s]*)?', convert_url, content)
-
-    return content
-
 
 def project_dir_to_internal(project_dir):
     """/root/chcgw_probe → -root-chcgw-probe"""
@@ -209,7 +176,6 @@ class ClaudeBot(botpy.Client):
 
     async def _send_to_user(self, text):
         """发送消息给配置的用户"""
-        text = sanitize_content(text)
         chunks = self._split_message(text)
 
         for chunk in chunks:
