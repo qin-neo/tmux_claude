@@ -9,6 +9,3 @@ __pycache__/
 
 # test 目录（运行时测试产生）
 test/
-
-# QQ Bot 配置文件（包含敏感信息）
-qq_bot_config.json
