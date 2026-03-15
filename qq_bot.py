@@ -4,44 +4,36 @@ QQ Bot for tmux_claude - QQ 远程控制 Claude CLI
 
 通过 QQ 消息与 Claude 交互：
 - 接收 QQ 消息 → 发送到 tmux session
-- 监听 tmux_claude.log → 发送 Claude 回复到 QQ
+- 监听 JSONL 文件 → 写 log + 发送 Claude 回复到 QQ
+
+复用 tmux_claude_log.py 的监听逻辑，无需单独启动 log 守护进程。
 """
 
 import sys
 import os
 import json
-import time
 import asyncio
 import argparse
 import subprocess
-import signal
 import logging
-import re
 from logging.handlers import RotatingFileHandler
+
+# 复用 tmux_claude_log.py 的核心组件
+from tmux_claude_log import ProjectWatcher, extract_message, project_dir_to_internal
 
 try:
     import botpy
-    from botpy import logging as botpy_logging
     from botpy.message import Message, DirectMessage
 except ImportError:
     print("错误: 未安装 qq-botpy，请运行: pip install qq-botpy", file=sys.stderr)
     sys.exit(1)
 
-# 回复完成标记
-TURN_END_MARKER = re.compile(r"\[SYSTEM\] turn duration: \d+ms")
-
 # 最大回复长度（QQ 消息限制）
 MAX_MESSAGE_LENGTH = 2000
 
 
-def project_dir_to_internal(project_dir):
-    """/root/chcgw_probe → -root-chcgw-probe"""
-    return project_dir.replace("/", "-").replace("_", "-")
-
-
 def send_to_tmux(session, text):
     """发送文本到 tmux session"""
-    # 转义特殊字符
     escaped = text.replace("'", "'\\''")
     subprocess.run(
         ["tmux", "send-keys", "-t", session, escaped, "Enter"],
@@ -49,77 +41,31 @@ def send_to_tmux(session, text):
     )
 
 
-class LogWatcher:
-    """监听 tmux_claude.log 文件变化"""
-
-    # 时间戳格式：2026-03-15 21:24:57,468
-    TIMESTAMP_PATTERN = re.compile(r'^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d{3} ')
-
-    def __init__(self, log_file, skip_existing=True):
-        self.log_file = log_file
-        self.offset = os.path.getsize(log_file) if skip_existing and os.path.exists(log_file) else 0
-
-    def read_new(self):
-        """读取新增内容，返回完整的日志条目列表（每条可能跨多行）"""
-        if not os.path.exists(self.log_file):
-            return []
-
-        try:
-            size = os.path.getsize(self.log_file)
-        except OSError:
-            return []
-
-        if size < self.offset:
-            self.offset = 0
-        elif size == self.offset:
-            return []
-
-        try:
-            with open(self.log_file, "r", errors="replace") as f:
-                f.seek(self.offset)
-                data = f.read()
-                self.offset = f.tell()
-        except OSError:
-            return []
-
-        # 按时间戳分割日志条目
-        entries = []
-        current_entry = []
-
-        for line in data.splitlines():
-            if self.TIMESTAMP_PATTERN.match(line):
-                # 新条目开始，保存之前的条目
-                if current_entry:
-                    entries.append("\n".join(current_entry))
-                current_entry = [line]
-            else:
-                # 续行，追加到当前条目
-                if current_entry:
-                    current_entry.append(line)
-
-        # 保存最后一个条目
-        if current_entry:
-            entries.append("\n".join(current_entry))
-
-        return entries
+def setup_log_file(log_file):
+    """设置 log 文件 handler"""
+    os.makedirs(os.path.dirname(log_file), exist_ok=True)
+    handler = RotatingFileHandler(
+        log_file, maxBytes=10 * 1024 * 1024, backupCount=100, encoding="utf-8"
+    )
+    handler.setLevel(logging.INFO)
+    handler.setFormatter(logging.Formatter(fmt="%(asctime)s %(levelname)s %(message)s"))
+    return handler
 
 
 class ClaudeBot(botpy.Client):
     """QQ Bot 客户端"""
 
-    def __init__(self, session, log_file, logger, **kwargs):
-        # 移除 logger 参数，botpy.Client 不接受
+    def __init__(self, session, watcher, log_handler, logger, **kwargs):
         super().__init__(**kwargs)
         self.session = session
-        self.log_watcher = LogWatcher(log_file, skip_existing=True)
-        self._pending_replies = {}  # channel_id/group_id -> {"accumulated": [], "last_time": float}
-        self._reply_cooldown = 2.0  # 秒，等待更多输出
-        self._check_interval = 0.5  # 秒，轮询间隔
-        self._external_logger = logger  # 使用外部 logger
-        self._test_channel_id = None  # 测试消息目标频道
-        self._test_group_id = None    # 测试消息目标群
-        self._test_c2c_openid = None  # 测试消息目标用户 (C2C单聊)
-        self._config_path = None      # 配置文件路径
+        self.watcher = watcher  # ProjectWatcher 实例
+        self.log_handler = log_handler  # log 文件 handler
+        self._check_interval = 0.5
+        self._external_logger = logger
+        self._test_channel_id = None
+        self._test_group_id = None
+        self._test_c2c_openid = None
+        self._config_path = None
 
     def set_test_target(self, channel_id=None, group_id=None, c2c_openid=None, config_path=None):
         """设置测试消息目标"""
@@ -137,37 +83,36 @@ class ClaudeBot(botpy.Client):
         asyncio.create_task(self._listen_forever())
 
     async def _listen_forever(self):
-        """常驻监听协程，持续读取日志并发送给用户"""
+        """常驻监听协程：监听 JSONL → 写 log → 发送给用户"""
         self._external_logger.info("启动常驻监听协程")
+        state = {}
+
         while True:
             try:
-                entries = self.log_watcher.read_new()
-                for entry in entries:
-                    # 解析日志条目
-                    parts = entry.split(" INFO ", 1)
-                    if len(parts) < 2:
-                        continue
-
-                    log_content = parts[1]
-
-                    # 发送所有内容给用户
-                    if log_content.startswith("[ASSISTANT]"):
-                        text = log_content[len("[ASSISTANT]"):].strip()
-                        if text:
-                            await self._send_to_user(text)
-                    elif log_content.startswith("[USER]"):
-                        text = log_content[len("[USER]"):].strip()
-                        if text:
-                            await self._send_to_user(f"[用户] {text}")
-                    elif log_content.startswith("[TOOL USE]"):
-                        await self._send_to_user(f"[工具调用] {log_content[len('[TOOL USE]'):].strip()}")
-                    elif log_content.startswith("[TOOL RESULT]"):
-                        await self._send_to_user(f"[工具结果] {log_content[len('[TOOL RESULT]'):].strip()[:200]}...")
-                    elif log_content.startswith("[TOOL ERROR]"):
-                        await self._send_to_user(f"[工具错误] {log_content[len('[TOOL ERROR]'):].strip()[:200]}...")
-                    elif log_content.startswith("[SYSTEM]"):
-                        # turn duration 不发送，避免干扰
-                        pass
+                for obj in self.watcher.poll(timeout=self._check_interval):
+                    lines, _ = extract_message(obj, state)
+                    for line in lines:
+                        # 写入 log 文件
+                        self.log_handler.emit(logging.LogRecord(
+                            name="claude_log", level=logging.INFO,
+                            pathname="", lineno=0, msg=line,
+                            args=(), exc_info=None
+                        ))
+                        # 发送给用户
+                        if line.startswith("[ASSISTANT]"):
+                            text = line[len("[ASSISTANT]"):].strip()
+                            if text:
+                                await self._send_to_user(text)
+                        elif line.startswith("[USER]"):
+                            text = line[len("[USER]"):].strip()
+                            if text:
+                                await self._send_to_user(f"[用户] {text}")
+                        elif line.startswith("[TOOL USE]"):
+                            await self._send_to_user(f"[工具调用] {line[len('[TOOL USE]'):].strip()}")
+                        elif line.startswith("[TOOL RESULT]"):
+                            await self._send_to_user(f"[工具结果] {line[len('[TOOL RESULT]'):].strip()[:200]}...")
+                        elif line.startswith("[TOOL ERROR]"):
+                            await self._send_to_user(f"[工具错误] {line[len('[TOOL ERROR]'):].strip()[:200]}...")
 
                 await asyncio.sleep(self._check_interval)
             except Exception as e:
@@ -392,9 +337,9 @@ def main():
 
     appid = config.get("appid")
     secret = config.get("secret")
-    test_channel_id = config.get("test_channel_id")  # 测试消息目标频道
-    test_group_id = config.get("test_group_id")      # 测试消息目标群
-    test_c2c_openid = config.get("test_c2c_openid")  # 测试消息目标用户 (C2C单聊)
+    test_channel_id = config.get("test_channel_id")
+    test_group_id = config.get("test_group_id")
+    test_c2c_openid = config.get("test_c2c_openid")
 
     if not appid or not secret:
         print("错误: 配置文件缺少 appid 或 secret", file=sys.stderr)
@@ -405,30 +350,41 @@ def main():
         print(f"错误: tmux session '{args.session}' 不存在", file=sys.stderr)
         sys.exit(1)
 
-    # 日志文件
+    # 设置日志
     log_file = os.path.join(log_dir, "qq_bot.log")
     logger = setup_logging(log_file)
 
-    # tmux_claude.log 路径
-    claude_log = os.path.join(log_dir, "tmux_claude.log")
+    # 设置 log 文件 handler (tmux_claude.log)
+    claude_log_file = os.path.join(log_dir, "tmux_claude.log")
+    log_handler = setup_log_file(claude_log_file)
+
+    # 初始化 ProjectWatcher
+    internal_dir = os.path.join(args.claude_dir, "projects", project_dir_to_internal(project_dir))
+    if not os.path.isdir(internal_dir):
+        print(f"错误: claude 数据目录不存在: {internal_dir}", file=sys.stderr)
+        print("该项目可能尚未被 claude 打开过", file=sys.stderr)
+        sys.exit(1)
+
+    watcher = ProjectWatcher(internal_dir, skip_existing=True)
 
     print(f"[INFO] QQ Bot 启动: session={args.session}, log={log_file}", file=sys.stderr)
+    print(f"[INFO] Claude log: {claude_log_file}", file=sys.stderr)
 
     # 创建 Bot
     intents = botpy.Intents(
-        public_guild_messages=True,  # 频道 @ 消息
-        public_messages=True,         # 群 @ 消息
-        direct_message=True,          # 私信
+        public_guild_messages=True,
+        public_messages=True,
+        direct_message=True,
     )
 
     client = ClaudeBot(
         session=args.session,
-        log_file=claude_log,
+        watcher=watcher,
+        log_handler=log_handler,
         logger=logger,
         intents=intents,
     )
 
-    # 设置测试消息目标和配置文件路径
     client.set_test_target(
         channel_id=test_channel_id,
         group_id=test_group_id,
@@ -437,7 +393,10 @@ def main():
     )
 
     # 运行 Bot
-    client.run(appid=appid, secret=secret)
+    try:
+        client.run(appid=appid, secret=secret)
+    finally:
+        watcher.close()
 
 
 if __name__ == "__main__":

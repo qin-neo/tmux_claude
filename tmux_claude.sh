@@ -152,29 +152,14 @@ tmux unbind -n MouseDown3Pane
 echo "已启动 tmux 会话 '$SESSION_NAME'"
 echo "工作目录: $DIR_ABS"
 
-# 清理残留后启动 log 守护进程
-stop_log_daemon "$SESSION_NAME"
-
-LOG_ARGS=(
-    --project-dir "$DIR_ABS"
-    --session "$SESSION_NAME"
-    --log-dir "$DIR_ABS"
-    --claude-dir "$CLAUDE_DIR"
-)
-if [[ "$AUTO_APPROVE" == "true" ]]; then
-    LOG_ARGS+=(--auto-approve)
-    echo "已启用自动确认模式 (all_yes)"
-fi
-
-nohup python3 "$LOG_SCRIPT" "${LOG_ARGS[@]}" > /dev/null 2>&1 &
-echo "已启动 log 守护进程 (PID: $!)"
-echo "日志文件: $DIR_ABS/tmux_claude.log"
-
-# 启动 QQ Bot（如果项目目录下配置存在）
+# 检查是否需要启动 QQ Bot
 QQ_CONFIG="$DIR_ABS/qq_bot_config.json"
+
 if [[ -f "$QQ_CONFIG" ]]; then
+    # 有 QQ 配置：启动 qq_bot.py（内嵌监听 + 写 log）
     QQ_SCRIPT="$SCRIPT_DIR/qq_bot.py"
     if [[ -f "$QQ_SCRIPT" ]]; then
+        stop_qq_bot "$SESSION_NAME"
         nohup python3 "$QQ_SCRIPT" \
             --project-dir "$DIR_ABS" \
             --session "$SESSION_NAME" \
@@ -183,9 +168,28 @@ if [[ -f "$QQ_CONFIG" ]]; then
             --config "$QQ_CONFIG" \
             > /dev/null 2>&1 &
         echo "已启动 QQ Bot (PID: $!)"
+        echo "日志文件: $DIR_ABS/tmux_claude.log"
     else
         echo "警告: 找不到 $QQ_SCRIPT，跳过 QQ Bot"
     fi
+else
+    # 无 QQ 配置：启动 log 守护进程
+    stop_log_daemon "$SESSION_NAME"
+
+    LOG_ARGS=(
+        --project-dir "$DIR_ABS"
+        --session "$SESSION_NAME"
+        --log-dir "$DIR_ABS"
+        --claude-dir "$CLAUDE_DIR"
+    )
+    if [[ "$AUTO_APPROVE" == "true" ]]; then
+        LOG_ARGS+=(--auto-approve)
+        echo "已启用自动确认模式 (all_yes)"
+    fi
+
+    nohup python3 "$LOG_SCRIPT" "${LOG_ARGS[@]}" > /dev/null 2>&1 &
+    echo "已启动 log 守护进程 (PID: $!)"
+    echo "日志文件: $DIR_ABS/tmux_claude.log"
 fi
 
 # daemon 模式不 attach，直接退出
