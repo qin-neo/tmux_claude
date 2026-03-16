@@ -13,6 +13,8 @@ import sys
 import os
 import json
 import time
+import re
+import base64
 import asyncio
 import argparse
 import subprocess
@@ -24,6 +26,7 @@ from tmux_claude_log import ProjectWatcher, extract_message, project_dir_to_inte
 
 try:
     import botpy
+    from botpy.http import Route
 except ImportError:
     print("错误: 未安装 qq-botpy，请运行: pip install qq-botpy", file=sys.stderr)
     sys.exit(1)
@@ -33,6 +36,21 @@ MAX_MESSAGE_LENGTH = 2000
 
 # tmux session 检查间隔
 SESSION_CHECK_INTERVAL = 10.0
+
+# 媒体标签正则
+MEDIA_TAG_RE = re.compile(r'<(qqimg|qqvoice|qqvideo|qqfile)>([^<>]+)</(?:qqimg|qqvoice|qqvideo|qqfile|img)>', re.IGNORECASE)
+
+# 内部标记正则（如 [[reply_to: xxx]]）
+INTERNAL_MARKER_RE = re.compile(r'\[\[[a-z_]+:\s*[^\]]*\]\]', re.IGNORECASE)
+
+
+def filter_internal_markers(text):
+    """过滤内部标记，清理多余空行"""
+    if not text:
+        return text
+    result = INTERNAL_MARKER_RE.sub('', text)
+    result = re.sub(r'\n{3,}', '\n\n', result).strip()
+    return result
 
 
 def send_to_tmux(session, text):
@@ -128,22 +146,275 @@ class ClaudeBot(botpy.Client):
                 await asyncio.sleep(1)
 
     async def _send_to_user(self, text):
-        """发送消息给配置的用户"""
+        """发送消息给配置的用户，支持媒体标签"""
         if not self._test_c2c_openid:
             return
 
-        chunks = self._split_message(text)
+        # 过滤内部标记
+        text = filter_internal_markers(text)
 
-        for chunk in chunks:
+        # 解析媒体标签，构建发送队列
+        send_queue = self._parse_media_tags(text)
+
+        for item in send_queue:
             try:
-                await self.api.post_c2c_message(
-                    openid=self._test_c2c_openid,
-                    content=chunk
-                )
-                self._external_logger.info(f"已发送C2C消息 ({len(chunk)} 字符)")
-                await asyncio.sleep(0.5)
+                if item['type'] == 'text':
+                    # 发送纯文本
+                    for chunk in self._split_message(item['content']):
+                        await self.api.post_c2c_message(
+                            openid=self._test_c2c_openid,
+                            content=chunk
+                        )
+                        self._external_logger.info(f"已发送C2C消息 ({len(chunk)} 字符)")
+                        await asyncio.sleep(0.5)
+                elif item['type'] == 'image':
+                    # 发送图片
+                    await self._send_image(item['content'])
+                elif item['type'] == 'file':
+                    # 发送文件
+                    await self._send_file(item['content'])
+                elif item['type'] == 'voice':
+                    # 发送语音
+                    await self._send_voice(item['content'])
+                elif item['type'] == 'video':
+                    # 发送视频
+                    await self._send_video(item['content'])
             except Exception as e:
                 self._external_logger.error(f"发送消息失败: {e}")
+
+    async def _send_image(self, path_or_url):
+        """发送图片"""
+        # 公网 URL，直接使用 API
+        if path_or_url.startswith(('http://', 'https://')):
+            try:
+                media = await self.api.post_c2c_file(
+                    openid=self._test_c2c_openid,
+                    file_type=1,
+                    url=path_or_url,
+                    srv_send_msg=True
+                )
+                self._external_logger.info(f"已发送图片(URL): {path_or_url}")
+                await asyncio.sleep(0.5)
+                return
+            except Exception as e:
+                self._external_logger.error(f"发送图片URL失败: {e}")
+                await self.api.post_c2c_message(
+                    openid=self._test_c2c_openid,
+                    content=f"[图片发送失败: {path_or_url}]"
+                )
+                return
+
+        # 本地文件，读取并上传 Base64
+        if not os.path.exists(path_or_url):
+            await self.api.post_c2c_message(
+                openid=self._test_c2c_openid,
+                content=f"[图片文件不存在: {path_or_url}]"
+            )
+            return
+
+        try:
+            # 读取文件并转为 Base64
+            with open(path_or_url, 'rb') as f:
+                file_data = base64.b64encode(f.read()).decode('utf-8')
+
+            # 直接调用 HTTP API 上传
+            route = Route('POST', '/v2/users/{openid}/files', openid=self._test_c2c_openid)
+            payload = {
+                'file_type': 1,  # 图片
+                'file_data': file_data,
+                'srv_send_msg': True
+            }
+            result = await self.api._http.request(route, json=payload)
+            self._external_logger.info(f"已发送图片(Base64): {path_or_url}")
+            await asyncio.sleep(0.5)
+        except Exception as e:
+            self._external_logger.error(f"发送图片失败: {e}")
+            await self.api.post_c2c_message(
+                openid=self._test_c2c_openid,
+                content=f"[图片发送失败: {path_or_url}]"
+            )
+
+    async def _send_file(self, path_or_url):
+        """发送文件"""
+        # 公网 URL
+        if path_or_url.startswith(('http://', 'https://')):
+            try:
+                media = await self.api.post_c2c_file(
+                    openid=self._test_c2c_openid,
+                    file_type=4,
+                    url=path_or_url,
+                    srv_send_msg=True
+                )
+                self._external_logger.info(f"已发送文件(URL): {path_or_url}")
+                await asyncio.sleep(0.5)
+                return
+            except Exception as e:
+                self._external_logger.error(f"发送文件URL失败: {e}")
+                await self.api.post_c2c_message(
+                    openid=self._test_c2c_openid,
+                    content=f"[文件发送失败: {path_or_url}]"
+                )
+                return
+
+        # 本地文件
+        if not os.path.exists(path_or_url):
+            await self.api.post_c2c_message(
+                openid=self._test_c2c_openid,
+                content=f"[文件不存在: {path_or_url}]"
+            )
+            return
+
+        try:
+            with open(path_or_url, 'rb') as f:
+                file_data = base64.b64encode(f.read()).decode('utf-8')
+
+            route = Route('POST', '/v2/users/{openid}/files', openid=self._test_c2c_openid)
+            payload = {
+                'file_type': 4,  # 文件
+                'file_data': file_data,
+                'srv_send_msg': True
+            }
+            result = await self.api._http.request(route, json=payload)
+            self._external_logger.info(f"已发送文件(Base64): {path_or_url}")
+            await asyncio.sleep(0.5)
+        except Exception as e:
+            self._external_logger.error(f"发送文件失败: {e}")
+            await self.api.post_c2c_message(
+                openid=self._test_c2c_openid,
+                content=f"[文件发送失败: {path_or_url}]"
+            )
+
+    async def _send_voice(self, path):
+        """发送语音"""
+        if path.startswith(('http://', 'https://')):
+            try:
+                media = await self.api.post_c2c_file(
+                    openid=self._test_c2c_openid,
+                    file_type=3,
+                    url=path,
+                    srv_send_msg=True
+                )
+                self._external_logger.info(f"已发送语音(URL): {path}")
+                await asyncio.sleep(0.5)
+                return
+            except Exception as e:
+                self._external_logger.error(f"发送语音URL失败: {e}")
+                await self.api.post_c2c_message(
+                    openid=self._test_c2c_openid,
+                    content=f"[语音发送失败: {path}]"
+                )
+                return
+
+        if not os.path.exists(path):
+            await self.api.post_c2c_message(
+                openid=self._test_c2c_openid,
+                content=f"[语音文件不存在: {path}]"
+            )
+            return
+
+        try:
+            with open(path, 'rb') as f:
+                file_data = base64.b64encode(f.read()).decode('utf-8')
+
+            route = Route('POST', '/v2/users/{openid}/files', openid=self._test_c2c_openid)
+            payload = {
+                'file_type': 3,  # 语音
+                'file_data': file_data,
+                'srv_send_msg': True
+            }
+            result = await self.api._http.request(route, json=payload)
+            self._external_logger.info(f"已发送语音(Base64): {path}")
+            await asyncio.sleep(0.5)
+        except Exception as e:
+            self._external_logger.error(f"发送语音失败: {e}")
+            await self.api.post_c2c_message(
+                openid=self._test_c2c_openid,
+                content=f"[语音发送失败: {path}]"
+            )
+
+    async def _send_video(self, path_or_url):
+        """发送视频"""
+        if path_or_url.startswith(('http://', 'https://')):
+            try:
+                media = await self.api.post_c2c_file(
+                    openid=self._test_c2c_openid,
+                    file_type=2,
+                    url=path_or_url,
+                    srv_send_msg=True
+                )
+                self._external_logger.info(f"已发送视频(URL): {path_or_url}")
+                await asyncio.sleep(0.5)
+                return
+            except Exception as e:
+                self._external_logger.error(f"发送视频URL失败: {e}")
+                await self.api.post_c2c_message(
+                    openid=self._test_c2c_openid,
+                    content=f"[视频发送失败: {path_or_url}]"
+                )
+                return
+
+        if not os.path.exists(path_or_url):
+            await self.api.post_c2c_message(
+                openid=self._test_c2c_openid,
+                content=f"[视频文件不存在: {path_or_url}]"
+            )
+            return
+
+        try:
+            with open(path_or_url, 'rb') as f:
+                file_data = base64.b64encode(f.read()).decode('utf-8')
+
+            route = Route('POST', '/v2/users/{openid}/files', openid=self._test_c2c_openid)
+            payload = {
+                'file_type': 2,  # 视频
+                'file_data': file_data,
+                'srv_send_msg': True
+            }
+            result = await self.api._http.request(route, json=payload)
+            self._external_logger.info(f"已发送视频(Base64): {path_or_url}")
+            await asyncio.sleep(0.5)
+        except Exception as e:
+            self._external_logger.error(f"发送视频失败: {e}")
+            await self.api.post_c2c_message(
+                openid=self._test_c2c_openid,
+                content=f"[视频发送失败: {path_or_url}]"
+            )
+
+    def _parse_media_tags(self, text):
+        """解析媒体标签，返回发送队列"""
+        queue = []
+        last_end = 0
+
+        for match in MEDIA_TAG_RE.finditer(text):
+            # 添加标签前的文本
+            before = text[last_end:match.start()].strip()
+            if before:
+                queue.append({'type': 'text', 'content': before})
+
+            # 添加媒体项
+            tag_type = match.group(1).lower()
+            content = match.group(2).strip()
+            if tag_type == 'qqimg':
+                queue.append({'type': 'image', 'content': content})
+            elif tag_type == 'qqfile':
+                queue.append({'type': 'file', 'content': content})
+            elif tag_type == 'qqvoice':
+                queue.append({'type': 'voice', 'content': content})
+            elif tag_type == 'qqvideo':
+                queue.append({'type': 'video', 'content': content})
+
+            last_end = match.end()
+
+        # 添加最后一个标签后的文本
+        after = text[last_end:].strip()
+        if after:
+            queue.append({'type': 'text', 'content': after})
+
+        # 如果没有媒体标签，返回整个文本
+        if not queue:
+            queue.append({'type': 'text', 'content': text})
+
+        return queue
 
     async def _send_online_notification(self):
         """发送上线通知到用户"""
@@ -180,9 +451,47 @@ class ClaudeBot(botpy.Client):
             self._save_openid_to_config(openid)
 
         content = message.content.strip()
-        if content:
-            self._external_logger.info(f"发送到 tmux [{self.session}]: {content}")
-            send_to_tmux(self.session, content)
+
+        # 处理附件（图片等）
+        attachments_info = ""
+        if hasattr(message, 'attachments') and message.attachments:
+            try:
+                # attachments 可能是字符串、列表或对象
+                atts = message.attachments
+                if isinstance(atts, str):
+                    atts = json.loads(atts)
+                elif not isinstance(atts, list):
+                    # 可能是单个对象或可迭代对象
+                    atts = list(atts) if hasattr(atts, '__iter__') else [atts]
+
+                for att in atts:
+                    # 支持 dict 和对象两种形式
+                    if isinstance(att, dict):
+                        content_type = att.get('content_type', '')
+                        url = att.get('url', '')
+                        filename = att.get('filename', '')
+                    else:
+                        content_type = getattr(att, 'content_type', '') or ''
+                        url = getattr(att, 'url', '') or ''
+                        filename = getattr(att, 'filename', '') or ''
+
+                    if content_type.startswith('image/'):
+                        attachments_info += f"\n[图片: {filename}]\n图片URL: {url}\n"
+                        self._external_logger.info(f"收到图片附件: {filename}")
+                    elif content_type.startswith('audio/'):
+                        attachments_info += f"\n[语音: {filename}]\n语音URL: {url}\n"
+                    elif content_type.startswith('video/'):
+                        attachments_info += f"\n[视频: {filename}]\n视频URL: {url}\n"
+                    else:
+                        attachments_info += f"\n[附件: {filename}]\nURL: {url}\n"
+            except Exception as e:
+                self._external_logger.error(f"解析附件失败: {e}")
+
+        # 合并文本和附件信息
+        full_content = content + attachments_info
+        if full_content.strip():
+            self._external_logger.info(f"发送到 tmux [{self.session}]: {full_content[:100]}...")
+            send_to_tmux(self.session, full_content)
 
     def _save_openid_to_config(self, openid):
         """保存 openid 到配置文件"""

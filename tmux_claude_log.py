@@ -33,7 +33,6 @@ _EVENT_HEADER_SIZE = 16  # wd(4) + mask(4) + cookie(4) + len(4)
 
 _libc = ctypes.CDLL(ctypes.util.find_library("c"), use_errno=True)
 
-_RE_INTERNAL_TAG = re.compile(r"</?[\w-]+>")
 _RE_ANSI = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]")
 _RE_BASH_INPUT = re.compile(r"<bash-input>(.*?)</bash-input>", re.DOTALL)
 _RE_BASH_STDOUT = re.compile(r"<bash-stdout>(.*?)</bash-stdout>", re.DOTALL)
@@ -80,9 +79,8 @@ def project_dir_to_internal(project_dir):
 
 
 def _clean_text(text):
-    """清理 ANSI 转义和内部标签，保留换行结构"""
+    """清理 ANSI 转义，保留换行结构"""
     text = _RE_ANSI.sub("", text)
-    text = _RE_INTERNAL_TAG.sub("", text)
     return text.strip()
 
 
