@@ -75,4 +75,14 @@ Non-interactive shell when using `ssh host "command"` - `~/.bashrc` not loaded.
 
 Confirm before push to github when user says "deploy".
 
-部署到 hk2 时，参数一定带上 all_yes。
+部署到 hk2：
+```bash
+# 同步文件
+scp tmux_claude.sh tmux_claude_log.py qq_bot.py hk2:~/tmux_claude/
+
+# 停止旧会话
+ssh hk2 "tmux kill-session -t war 2>/dev/null || true"
+
+# 启动（必须带 all_yes，用 bash -i -c 加载 nvm 环境）
+ssh hk2 'bash -i -c "tmux_claude war all_yes --daemon"'
+```
