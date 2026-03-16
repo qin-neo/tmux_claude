@@ -7,6 +7,7 @@
 #   tmux_claude.sh <目录>             在指定目录启动 claude tmux session
 #   tmux_claude.sh <目录> all_yes     启动并自动确认所有权限请求
 #   tmux_claude.sh <目录> --daemon    后台启动，不 attach tmux
+#   tmux_claude.sh <目录> --claude "claude --effort max"  指定 claude 启动命令
 #   tmux_claude.sh <目录> stop        停止指定目录的 tmux session 和 log 守护进程
 
 export LANG="C.UTF-8"
@@ -20,23 +21,17 @@ if ! command -v tmux &>/dev/null; then
     exit 1
 fi
 
-# 检测 claude 命令
-if command -v claude &>/dev/null; then
-    CLAUDE_CMD="claude --effort max"
-    CLAUDE_DIR="$HOME/.claude"
-else
-    echo "错误: 未安装 claude，请先安装: npm install -g @anthropic-ai/claude-code"
-    exit 1
-fi
+CLAUDE_DIR="$HOME/.claude"
+DEFAULT_CLAUDE_CMD="claude --effort max"
 
 usage() {
-    echo "用法: $0 <目录> [stop|all_yes|--daemon]"
+    echo "用法: $0 <目录> [stop|all_yes|--daemon|--claude <cmd>]"
     echo "  <目录>    claude 的工作目录，同时作为 tmux session 名"
     echo "  all_yes   自动确认所有权限请求"
     echo "  --daemon  后台启动，不 attach tmux"
+    echo "  --claude  指定 claude 启动命令 (默认: $DEFAULT_CLAUDE_CMD)"
     echo "  stop      停止指定的 tmux session、log 守护进程和 QQ Bot"
     echo ""
-    echo "Claude 命令: $CLAUDE_CMD"
     echo "QQ Bot: 若项目目录下存在 qq_bot_config.json 则自动启动"
     echo "加入 PATH: ln -s $SCRIPT_DIR/tmux_claude.sh /usr/local/bin/tmux_claude"
 }
@@ -81,10 +76,10 @@ fi
 DIR_ARG="${1%/}"
 shift 2>/dev/null || true
 
-# 解析参数
 DAEMON_MODE=false
 AUTO_APPROVE=false
 ACTION=""
+CLAUDE_CMD="$DEFAULT_CLAUDE_CMD"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -100,6 +95,14 @@ while [[ $# -gt 0 ]]; do
             DAEMON_MODE=true
             shift
             ;;
+        --claude)
+            if [[ -z "$2" || "$2" == -* ]]; then
+                echo "错误: --claude 需要参数"
+                exit 1
+            fi
+            CLAUDE_CMD="$2"
+            shift 2
+            ;;
         *)
             echo "未知参数: $1"
             usage
@@ -107,6 +110,13 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
+
+# 检测 claude 二进制是否存在
+CLAUDE_BIN="${CLAUDE_CMD%% *}"
+if ! command -v "$CLAUDE_BIN" &>/dev/null; then
+    echo "错误: 未找到命令 '$CLAUDE_BIN'"
+    exit 1
+fi
 
 if [[ -z "$DIR_ARG" || "$DIR_ARG" == -* ]]; then
     usage
@@ -152,7 +162,6 @@ tmux unbind -n MouseDown3Pane
 echo "已启动 tmux 会话 '$SESSION_NAME'"
 echo "工作目录: $DIR_ABS"
 
-# 检查是否需要启动 QQ Bot
 QQ_CONFIG="$DIR_ABS/qq_bot_config.json"
 
 if [[ -f "$QQ_CONFIG" ]]; then

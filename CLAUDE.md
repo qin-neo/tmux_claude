@@ -9,7 +9,7 @@ A tmux-based wrapper for managing multiple Claude CLI processes in the backgroun
 ## Components
 
 1. **tmux_claude.sh** — Session manager. No args lists active sessions; with a directory arg, creates a tmux session (named after the directory basename), cd's into that directory, and runs `claude --continue` (falls back to `claude` if no prior session). Automatically starts the log daemon or QQ Bot. Supports `stop` command to tear down session and log daemon.
-2. **tmux_claude_log.py** — Pure background daemon (launched by `tmux_claude.sh` when no QQ config). Monitors `~/.claude/projects/<project>/` JSONL files for changes → extracts user messages, assistant text, and tool-use summaries → writes to `RotatingFileHandler` (10MB per file, 100 backups). Writes a PID file for liveness detection. Exits gracefully on SIGTERM/SIGINT or when the tmux session ends.
+2. **tmux_claude_log.py** — Pure background daemon (launched by `tmux_claude.sh` when no QQ config). Monitors `~/.claude/projects/<project>/` JSONL files for changes → extracts user messages, assistant text, and tool-use summaries → writes to `RotatingFileHandler` (10MB per file, 100 backups). Exits gracefully on SIGTERM/SIGINT or when the tmux session ends.
 3. **qq_bot.py** — QQ Bot client (launched when `qq_bot_config.json` exists in project dir). Imports `ProjectWatcher` and `extract_message` from `tmux_claude_log.py`. Monitors JSONL files → writes log + sends Claude replies to QQ. Only C2C messaging is verified.
 
 ## Running
@@ -30,6 +30,9 @@ A tmux-based wrapper for managing multiple Claude CLI processes in the backgroun
 # Combine: auto-approve + background mode
 ./tmux_claude.sh /path/to/project all_yes --daemon
 
+# Specify custom claude command
+./tmux_claude.sh /path/to/project --claude "claude"
+
 # Stop a session and its log daemon
 ./tmux_claude.sh /path/to/project stop
 ```
@@ -49,4 +52,27 @@ Given session name `<name>` and directory `<dir>`:
 
 **tmux_claude.sh** determines `SCRIPT_DIR` to locate `tmux_claude_log.py` relative to itself. Session name = `basename` of the directory argument (with `.` and `:` replaced by `_`). Sets tmux options for 256-color, true color, mouse support, and UTF-8 locale.
 
-**tmux_claude_log.py** maps the project directory to `~/.claude/projects/` (e.g. `/root/foo` → `-root-foo`), then polls all `*.jsonl` files (including `subagents/`) for new lines. Each JSONL line is parsed: `user` messages log content as `[USER]`, `assistant` text blocks as `[ASSISTANT]`, tool-use blocks as `[TOOL USE] <name>: <summary>`, and tool results as `[TOOL result]`. Meta messages (`isMeta: true`) and `file-history-snapshot` / `progress` types are skipped. Uses 2-second polling interval.
+**tmux_claude_log.py** maps the project directory to `~/.claude/projects/` (e.g. `/root/foo` → `-root-foo`), then polls all `*.jsonl` files (including `subagents/`) for new lines. Each JSONL line is parsed: `user` messages log content as `[USER]`, `assistant` text blocks as `[ASSISTANT]`, tool-use blocks as `[TOOL USE] <name>: <summary>`, and tool results as `[TOOL result]`. Meta messages (`isMeta: true`) and `file-history-snapshot` / `progress` types are skipped.
+
+## Code Style
+
+- **DRY** - Extract repeated logic into functions
+- **Format strings must match inputs**
+- **Concise comments** - Single-line for internal functions; skip obvious comments; only comment implicit constraints or non-self-explanatory names
+- **Code and comments must stay in sync**
+
+## Notes
+
+### SSH Remote Execution
+
+Non-interactive shell when using `ssh host "command"` - `~/.bashrc` not loaded.
+
+**Solution**: `ssh host "source ~/.bashrc && command"` or `ssh host "bash -i -c 'command'"`
+
+**Don't**: Load nvm/bashrc in scripts. Scripts run in correct environment.
+
+### Deployment
+
+Confirm before push to github when user says "deploy".
+
+部署到 hk2 时，参数一定带上 all_yes。

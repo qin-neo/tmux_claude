@@ -49,6 +49,9 @@ ln -s $(pwd)/tmux_claude.sh /usr/local/bin/tmux_claude
 
 # 组合：自动确认 + 后台模式
 ./tmux_claude.sh /path/to/project all_yes --daemon
+
+# 指定自定义 claude 启动命令
+./tmux_claude.sh /path/to/project --claude "claude"
 ```
 
 ### QQ Bot 远程控制（实验性）
@@ -101,11 +104,12 @@ ln -s $(pwd)/tmux_claude.sh /usr/local/bin/tmux_claude
 
 ### tmux_claude.sh
 
-1. 检测 `claude` 命令是否可用
-2. 以目录名作为 tmux 会话名创建会话
-3. 在会话中执行 `claude --continue`（无历史会话则执行 `claude`）
-4. 启动日志守护进程监控对话
-5. 附加到 tmux 会话
+1. 解析参数，确定 claude 启动命令（默认 `claude --effort max`）
+2. 检测 claude 二进制是否存在
+3. 以目录名作为 tmux 会话名创建会话
+4. 在会话中执行 `$CLAUDE_CMD --continue`（失败则执行 `$CLAUDE_CMD`）
+5. 启动日志守护进程或 QQ Bot
+6. 附加到 tmux 会话
 
 ### tmux_claude_log.py
 

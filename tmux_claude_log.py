@@ -305,6 +305,7 @@ def setup_logging(log_file):
 
 
 def check_tmux_session(session_name):
+    """检查 tmux session 是否存在"""
     return subprocess.run(
         ["tmux", "has-session", "-t", session_name], capture_output=True,
     ).returncode == 0
