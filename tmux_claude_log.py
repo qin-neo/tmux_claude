@@ -309,6 +309,14 @@ def check_tmux_session(session_name):
     ).returncode == 0
 
 
+def send_to_tmux(session_name, text):
+    """发送文本到 tmux session"""
+    subprocess.run(
+        ["tmux", "send-keys", "-t", session_name, text, "Enter"],
+        capture_output=True,
+    )
+
+
 def send_approve(session_name):
     """通过 tmux 发送 Enter 自动确认权限请求"""
     subprocess.run(
@@ -317,8 +325,21 @@ def send_approve(session_name):
     )
 
 
+CLAUDEMD_INTERVAL = 24 * 3600  # 24小时
+
+
+def check_claudemd_refresh(session_name, last_check, interval=CLAUDEMD_INTERVAL):
+    """检查是否需要刷新 CLAUDE.md，返回新的 last_check"""
+    now = time.monotonic()
+    if now - last_check >= interval:
+        send_to_tmux(session_name, "读一下 CLAUDE.md")
+        return now
+    return last_check
+
+
 def watch_loop(watcher, logger, session_name, stop_event, auto_approve):
     last_session_check = time.monotonic()
+    last_claudemd_read = time.monotonic()
     state = {}
     pending_approve = None  # (发送时间, 已重试次数)
 
@@ -355,6 +376,8 @@ def watch_loop(watcher, logger, session_name, stop_event, auto_approve):
             if not check_tmux_session(session_name):
                 print(f"[INFO] tmux session '{session_name}' 已结束，退出", file=sys.stderr)
                 break
+
+        last_claudemd_read = check_claudemd_refresh(session_name, last_claudemd_read)
 
 
 def main():

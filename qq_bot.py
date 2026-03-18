@@ -22,7 +22,7 @@ import logging
 from logging.handlers import RotatingFileHandler
 
 # 复用 tmux_claude_log.py 的核心组件
-from tmux_claude_log import ProjectWatcher, extract_message, project_dir_to_internal, send_approve
+from tmux_claude_log import ProjectWatcher, extract_message, project_dir_to_internal, send_approve, send_to_tmux, check_claudemd_refresh
 
 try:
     import botpy
@@ -51,14 +51,6 @@ def filter_internal_markers(text):
     result = INTERNAL_MARKER_RE.sub('', text)
     result = re.sub(r'\n{3,}', '\n\n', result).strip()
     return result
-
-
-def send_to_tmux(session, text):
-    """发送文本到 tmux session"""
-    subprocess.run(
-        ["tmux", "send-keys", "-t", session, text, "Enter"],
-        capture_output=True,
-    )
 
 
 def setup_log_file(log_file):
@@ -102,6 +94,7 @@ class ClaudeBot(botpy.Client):
         self._external_logger.info("启动常驻监听协程")
         state = {}
         last_session_check = time.monotonic()
+        last_claudemd_read = time.monotonic()
 
         while True:
             try:
@@ -142,6 +135,8 @@ class ClaudeBot(botpy.Client):
                     if not check_tmux_session(self.session):
                         self._external_logger.info(f"tmux session '{self.session}' 已结束，退出")
                         break
+
+                last_claudemd_read = check_claudemd_refresh(self.session, last_claudemd_read)
 
                 await asyncio.sleep(self._check_interval)
             except Exception as e:
