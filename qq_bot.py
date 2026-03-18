@@ -467,10 +467,10 @@ class ClaudeBot(botpy.Client):
 
         content = message.content.strip()
 
-        # 用户发送纯数字，直接发送到 tmux（权限选择或对话都可以）
+        # 用户发送纯数字，发送 Enter 确认权限选择
         if content.isdigit():
-            self._external_logger.info(f"数字输入: {content}")
-            send_to_tmux(self.session, content)
+            self._external_logger.info(f"权限选择: {content}")
+            send_approve(self.session)
             return
 
         # 处理附件（图片等）
