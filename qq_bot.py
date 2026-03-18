@@ -55,9 +55,8 @@ def filter_internal_markers(text):
 
 def send_to_tmux(session, text):
     """发送文本到 tmux session"""
-    escaped = text.replace("'", "'\\''")
     subprocess.run(
-        ["tmux", "send-keys", "-t", session, escaped, "Enter"],
+        ["tmux", "send-keys", "-t", session, text, "Enter"],
         capture_output=True,
     )
 
