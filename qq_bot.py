@@ -134,6 +134,9 @@ class ClaudeBot(botpy.Client):
                         if self._auto_approve:
                             send_approve(self.session)
                             self._external_logger.info("[tmux_claude auto approve]")
+                        else:
+                            # 通知用户可以发送数字选择
+                            await self._send_to_user("[权限请求] 请回复数字选择（如 1、2、3）")
                     else:
                         # 收到 tool result 或其他消息，清除等待状态
                         self._waiting_for_permission_choice = False
@@ -469,9 +472,9 @@ class ClaudeBot(botpy.Client):
 
         content = message.content.strip()
 
-        # 如果在等待权限选择，且用户发送数字，发送选择
-        if self._waiting_for_permission_choice and content.isdigit():
-            self._external_logger.info(f"权限选择: {content}")
+        # 用户发送纯数字，直接发送到 tmux（权限选择或对话都可以）
+        if content.isdigit():
+            self._external_logger.info(f"数字输入: {content}")
             send_to_tmux(self.session, content)
             return
 
