@@ -85,7 +85,6 @@ class ClaudeBot(botpy.Client):
         self._auto_approve = auto_approve
         self._test_c2c_openid = None
         self._config_path = None
-        self._waiting_for_permission_choice = False
 
     def set_test_target(self, c2c_openid=None, config_path=None):
         """设置测试消息目标"""
@@ -130,16 +129,12 @@ class ClaudeBot(botpy.Client):
                             await self._send_to_user(f"[工具错误] {line[len('[TOOL ERROR]'):].strip()[:200]}...")
 
                     if needs_approve:
-                        self._waiting_for_permission_choice = True
                         if self._auto_approve:
                             send_approve(self.session)
                             self._external_logger.info("[tmux_claude auto approve]")
                         else:
                             # 通知用户可以发送数字选择
                             await self._send_to_user("[权限请求] 请回复数字选择（如 1、2、3）")
-                    else:
-                        # 收到 tool result 或其他消息，清除等待状态
-                        self._waiting_for_permission_choice = False
 
                 now = time.monotonic()
                 if now - last_session_check >= SESSION_CHECK_INTERVAL:
