@@ -9,3 +9,4 @@ __pycache__/
 
 # test 目录（运行时测试产生）
 test/
+qq_bot_config.json

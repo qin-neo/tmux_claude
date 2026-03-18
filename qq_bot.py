@@ -268,14 +268,26 @@ class ClaudeBot(botpy.Client):
             with open(path_or_url, 'rb') as f:
                 file_data = base64.b64encode(f.read()).decode('utf-8')
 
+            filename = os.path.basename(path_or_url)
             route = Route('POST', '/v2/users/{openid}/files', openid=self._test_c2c_openid)
             payload = {
                 'file_type': 4,  # 文件
                 'file_data': file_data,
-                'srv_send_msg': True
+                'srv_send_msg': False,
+                'filename': filename
             }
             result = await self.api._http.request(route, json=payload)
-            self._external_logger.info(f"已发送文件(Base64): {path_or_url}")
+            file_info = result.get('file_info')
+            if file_info:
+                await self.api.post_c2c_message(
+                    openid=self._test_c2c_openid,
+                    msg_type=7,
+                    media={'file_info': file_info, 'name': filename},
+                    content=f'📄 {filename}'
+                )
+                self._external_logger.info(f"已发送文件: {path_or_url}")
+            else:
+                self._external_logger.error(f"上传文件未返回 file_info: {result}")
             await asyncio.sleep(0.5)
         except Exception as e:
             self._external_logger.error(f"发送文件失败: {e}")
