@@ -85,6 +85,7 @@ class ClaudeBot(botpy.Client):
         self._auto_approve = auto_approve
         self._test_c2c_openid = None
         self._config_path = None
+        self._waiting_for_permission_choice = False
 
     def set_test_target(self, c2c_openid=None, config_path=None):
         """设置测试消息目标"""
@@ -128,9 +129,14 @@ class ClaudeBot(botpy.Client):
                         elif line.startswith("[TOOL ERROR]"):
                             await self._send_to_user(f"[工具错误] {line[len('[TOOL ERROR]'):].strip()[:200]}...")
 
-                    if needs_approve and self._auto_approve:
-                        send_approve(self.session)
-                        self._external_logger.info("[tmux_claude auto approve]")
+                    if needs_approve:
+                        self._waiting_for_permission_choice = True
+                        if self._auto_approve:
+                            send_approve(self.session)
+                            self._external_logger.info("[tmux_claude auto approve]")
+                    else:
+                        # 收到 tool result 或其他消息，清除等待状态
+                        self._waiting_for_permission_choice = False
 
                 now = time.monotonic()
                 if now - last_session_check >= SESSION_CHECK_INTERVAL:
@@ -462,6 +468,12 @@ class ClaudeBot(botpy.Client):
             self._save_openid_to_config(openid)
 
         content = message.content.strip()
+
+        # 如果在等待权限选择，且用户发送数字，发送选择
+        if self._waiting_for_permission_choice and content.isdigit():
+            self._external_logger.info(f"权限选择: {content}")
+            send_to_tmux(self.session, content)
+            return
 
         # 处理附件（图片等）
         attachments_info = ""
