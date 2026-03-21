@@ -36,28 +36,6 @@ usage() {
     echo "加入 PATH: ln -s $SCRIPT_DIR/tmux_claude.sh /usr/local/bin/tmux_claude"
 }
 
-# 停止 log 守护进程
-stop_log_daemon() {
-    local session="$1"
-    local pid
-    pid=$(pgrep -f "tmux_claude_log.py --.*--session $session\\b" 2>/dev/null)
-    if [[ -n "$pid" ]]; then
-        kill $pid
-        echo "已停止 log 守护进程 (PID: $pid)"
-    fi
-}
-
-# 停止 QQ Bot
-stop_qq_bot() {
-    local session="$1"
-    local pid
-    pid=$(pgrep -f "qq_bot.py --.*--session $session\\b" 2>/dev/null)
-    if [[ -n "$pid" ]]; then
-        kill $pid
-        echo "已停止 QQ Bot (PID: $pid)"
-    fi
-}
-
 if [[ ! -f "$LOG_SCRIPT" ]]; then
     echo "错误: 找不到 $LOG_SCRIPT"
     exit 1
@@ -134,13 +112,22 @@ SESSION_NAME="$(basename "$DIR_ABS" | tr '.:' '_')"
 
 if [[ "$ACTION" == "stop" ]]; then
     if tmux has-session -t "$SESSION_NAME" 2>/dev/null; then
-        tmux kill-session -t "$SESSION_NAME"
-        echo "已停止 tmux 会话 '$SESSION_NAME'"
+        tmux send-keys -t "$SESSION_NAME" "/exit" Enter
+        echo "已发送 /exit 到 tmux 会话 '$SESSION_NAME'"
+        for i in {1..30}; do
+            if ! tmux has-session -t "$SESSION_NAME" 2>/dev/null; then
+                break
+            fi
+            sleep 1
+        done
+        if tmux has-session -t "$SESSION_NAME" 2>/dev/null; then
+            echo "tmux 会话 '$SESSION_NAME' 未响应 /exit"
+        else
+            echo "tmux 会话 '$SESSION_NAME' 已退出"
+        fi
     else
         echo "tmux 会话 '$SESSION_NAME' 不存在"
     fi
-    stop_log_daemon "$SESSION_NAME"
-    stop_qq_bot "$SESSION_NAME"
     exit 0
 fi
 
@@ -149,8 +136,35 @@ if tmux has-session -t "$SESSION_NAME" 2>/dev/null; then
     exec tmux attach -d -t "$SESSION_NAME"
 fi
 
-tmux new-session -d -s "$SESSION_NAME" -c "$DIR_ABS" \
-    "export LANG=C.UTF-8; $CLAUDE_CMD --continue || $CLAUDE_CMD"
+# 构建 tmux 启动命令
+QQ_CONFIG="$DIR_ABS/qq_bot_config.json"
+TMUX_CMD="export LANG=C.UTF-8; $CLAUDE_CMD --continue || $CLAUDE_CMD"
+
+if [[ -f "$QQ_CONFIG" ]]; then
+    # 有 QQ 配置：qq_bot 后台运行，claude 前台
+    QQ_SCRIPT="$SCRIPT_DIR/qq_bot.py"
+    if [[ -f "$QQ_SCRIPT" ]]; then
+        QQ_ARGS="--project-dir '$DIR_ABS' --session '$SESSION_NAME' --log-dir '$DIR_ABS' --claude-dir '$CLAUDE_DIR' --config '$QQ_CONFIG'"
+        if [[ "$AUTO_APPROVE" == "true" ]]; then
+            QQ_ARGS="$QQ_ARGS --auto-approve"
+        fi
+        TMUX_CMD="python3 '$QQ_SCRIPT' $QQ_ARGS > /dev/null 2>&1 & $TMUX_CMD"
+        echo "已启用自动确认模式 (all_yes)"
+    else
+        echo "警告: 找不到 $QQ_SCRIPT，跳过 QQ Bot"
+    fi
+else
+    # 无 QQ 配置：启动 log 守护进程（作为 tmux 子进程）
+    LOG_ARGS="--project-dir '$DIR_ABS' --session '$SESSION_NAME' --log-dir '$DIR_ABS' --claude-dir '$CLAUDE_DIR'"
+    if [[ "$AUTO_APPROVE" == "true" ]]; then
+        LOG_ARGS="$LOG_ARGS --auto-approve"
+        echo "已启用自动确认模式 (all_yes)"
+    fi
+    TMUX_CMD="python3 '$LOG_SCRIPT' $LOG_ARGS > /dev/null 2>&1 & $TMUX_CMD"
+fi
+
+# 启动 tmux session
+tmux new-session -d -s "$SESSION_NAME" -c "$DIR_ABS" "$TMUX_CMD"
 
 tmux set -t "$SESSION_NAME" default-terminal "tmux-256color"
 tmux set -ga -t "$SESSION_NAME" terminal-overrides ",xterm-256color:Tc"
@@ -161,50 +175,7 @@ tmux unbind -n MouseDown3Pane
 
 echo "已启动 tmux 会话 '$SESSION_NAME'"
 echo "工作目录: $DIR_ABS"
-
-QQ_CONFIG="$DIR_ABS/qq_bot_config.json"
-
-if [[ -f "$QQ_CONFIG" ]]; then
-    # 有 QQ 配置：启动 qq_bot.py（内嵌监听 + 写 log）
-    QQ_SCRIPT="$SCRIPT_DIR/qq_bot.py"
-    if [[ -f "$QQ_SCRIPT" ]]; then
-        stop_qq_bot "$SESSION_NAME"
-        QQ_ARGS=(
-            --project-dir "$DIR_ABS"
-            --session "$SESSION_NAME"
-            --log-dir "$DIR_ABS"
-            --claude-dir "$CLAUDE_DIR"
-            --config "$QQ_CONFIG"
-        )
-        if [[ "$AUTO_APPROVE" == "true" ]]; then
-            QQ_ARGS+=(--auto-approve)
-            echo "已启用自动确认模式 (all_yes)"
-        fi
-        nohup python3 "$QQ_SCRIPT" "${QQ_ARGS[@]}" > /dev/null 2>&1 &
-        echo "已启动 QQ Bot (PID: $!)"
-        echo "日志文件: $DIR_ABS/tmux_claude.log"
-    else
-        echo "警告: 找不到 $QQ_SCRIPT，跳过 QQ Bot"
-    fi
-else
-    # 无 QQ 配置：启动 log 守护进程
-    stop_log_daemon "$SESSION_NAME"
-
-    LOG_ARGS=(
-        --project-dir "$DIR_ABS"
-        --session "$SESSION_NAME"
-        --log-dir "$DIR_ABS"
-        --claude-dir "$CLAUDE_DIR"
-    )
-    if [[ "$AUTO_APPROVE" == "true" ]]; then
-        LOG_ARGS+=(--auto-approve)
-        echo "已启用自动确认模式 (all_yes)"
-    fi
-
-    nohup python3 "$LOG_SCRIPT" "${LOG_ARGS[@]}" > /dev/null 2>&1 &
-    echo "已启动 log 守护进程 (PID: $!)"
-    echo "日志文件: $DIR_ABS/tmux_claude.log"
-fi
+echo "日志文件: $DIR_ABS/tmux_claude.log"
 
 # daemon 模式不 attach，直接退出
 if [[ "$DAEMON_MODE" == "true" ]]; then

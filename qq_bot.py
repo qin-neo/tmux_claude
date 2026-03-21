@@ -19,7 +19,11 @@ import asyncio
 import argparse
 import subprocess
 import logging
+import tempfile
+import shutil
+from datetime import datetime
 from logging.handlers import RotatingFileHandler
+from urllib.request import urlopen
 
 # 复用 tmux_claude_log.py 的核心组件
 from tmux_claude_log import ProjectWatcher, extract_message, project_dir_to_internal, send_approve, send_to_tmux, check_claudemd_refresh
@@ -35,13 +39,127 @@ except ImportError:
 MAX_MESSAGE_LENGTH = 2000
 
 # tmux session 检查间隔
-SESSION_CHECK_INTERVAL = 10.0
+SESSION_CHECK_INTERVAL = 2.0
 
 # 媒体标签正则
 MEDIA_TAG_RE = re.compile(r'<(qqimg|qqvoice|qqvideo|qqfile)>([^<>]+)</(?:qqimg|qqvoice|qqvideo|qqfile|img)>', re.IGNORECASE)
 
 # 内部标记正则（如 [[reply_to: xxx]]）
 INTERNAL_MARKER_RE = re.compile(r'\[\[[a-z_]+:\s*[^\]]*\]\]', re.IGNORECASE)
+
+# 语音处理依赖检查
+VOICE_DEPS_CHECKED = False
+VOICE_DEPS_OK = False
+
+
+def check_voice_deps():
+    """检查语音处理依赖"""
+    global VOICE_DEPS_CHECKED, VOICE_DEPS_OK
+    if VOICE_DEPS_CHECKED:
+        return VOICE_DEPS_OK
+
+    VOICE_DEPS_CHECKED = True
+    try:
+        import pilk
+        import speech_recognition
+        if shutil.which('ffmpeg'):
+            VOICE_DEPS_OK = True
+            return True
+    except ImportError:
+        pass
+    return False
+
+
+def download_file(url, dest_path):
+    """下载文件到指定路径"""
+    with urlopen(url, timeout=30) as resp:
+        with open(dest_path, 'wb') as f:
+            f.write(resp.read())
+    return dest_path
+
+
+def silk_to_wav(amr_path, wav_path, logger=None):
+    """SILK (AMR) 转 WAV"""
+    try:
+        import pilk
+        pcm_path = amr_path.replace('.amr', '.pcm')
+        pilk.decode(amr_path, pcm_path)
+        if not os.path.exists(pcm_path):
+            if logger:
+                logger.error(f"pilk.decode 失败: {pcm_path} 不存在")
+            return None
+
+        result = subprocess.run([
+            'ffmpeg', '-y', '-f', 's16le', '-ar', '24000', '-ac', '1',
+            '-i', pcm_path, wav_path
+        ], capture_output=True, text=True)
+
+        if result.returncode != 0:
+            if logger:
+                logger.error(f"ffmpeg 失败: {result.stderr}")
+            return None
+
+        os.remove(pcm_path)
+        return wav_path
+    except Exception as e:
+        if logger:
+            logger.error(f"silk_to_wav 异常: {e}")
+        return None
+
+
+def transcribe_audio(wav_path, lang='zh-CN'):
+    """语音转文字"""
+    try:
+        import speech_recognition as sr
+        r = sr.Recognizer()
+        with sr.AudioFile(wav_path) as source:
+            audio = r.record(source)
+        return r.recognize_google(audio, language=lang)
+    except Exception as e:
+        return None
+
+
+def process_voice_attachment(url, filename, project_dir, logger):
+    """处理语音附件：下载 → 转码 → 转文字
+    返回: (text, local_path, status)
+    status: 'success' | 'download_failed' | 'convert_failed' | 'transcribe_failed' | 'no_deps'
+    """
+    if not check_voice_deps():
+        logger.warning("语音处理依赖不完整，跳过转文字")
+        return None, None, 'no_deps'
+
+    today = datetime.now().strftime('%Y%m%d')
+    media_dir = os.path.join(project_dir, today)
+    os.makedirs(media_dir, exist_ok=True)
+
+    base_name = filename.rsplit('.', 1)[0]
+    amr_path = os.path.join(media_dir, filename)
+    wav_path = os.path.join(media_dir, base_name + '.wav')
+
+    try:
+        logger.info(f"下载语音: {url[:60]}...")
+        download_file(url, amr_path)
+        if not os.path.exists(amr_path):
+            logger.error(f"下载失败: {amr_path} 不存在")
+            return None, None, 'download_failed'
+
+        logger.info(f"转换语音: {amr_path}")
+        wav_result = silk_to_wav(amr_path, wav_path, logger)
+        if not wav_result or not os.path.exists(wav_path):
+            logger.error(f"转换失败: {wav_path} 不存在")
+            return None, amr_path, 'convert_failed'
+
+        logger.info(f"转文字: {wav_path}")
+        text = transcribe_audio(wav_path)
+        if text:
+            logger.info(f"转写结果: {text}")
+            return text, amr_path, 'success'
+        else:
+            logger.warning("转文字失败")
+            return None, amr_path, 'transcribe_failed'
+    except Exception as e:
+        logger.error(f"语音处理失败: {e}")
+        return None, None
 
 
 def filter_internal_markers(text):
@@ -67,7 +185,7 @@ def setup_log_file(log_file):
 class ClaudeBot(botpy.Client):
     """QQ Bot 客户端"""
 
-    def __init__(self, session, watcher, log_handler, logger, auto_approve=False, **kwargs):
+    def __init__(self, session, watcher, log_handler, logger, project_dir=None, auto_approve=False, **kwargs):
         super().__init__(**kwargs)
         self.session = session
         self.watcher = watcher
@@ -77,6 +195,7 @@ class ClaudeBot(botpy.Client):
         self._auto_approve = auto_approve
         self._test_c2c_openid = None
         self._config_path = None
+        self._project_dir = project_dir
 
     def set_test_target(self, c2c_openid=None, config_path=None):
         """设置测试消息目标"""
@@ -113,6 +232,10 @@ class ClaudeBot(botpy.Client):
                         elif line.startswith("[USER]"):
                             text = line[len("[USER]"):].strip()
                             if text:
+                                # 检测 /exit 命令，主动退出
+                                if text == "/exit":
+                                    self._external_logger.info("收到 /exit 命令，退出")
+                                    return
                                 await self._send_to_user(f"[用户] {text}")
                         elif line.startswith("[TOOL USE]"):
                             await self._send_to_user(f"[工具调用] {line[len('[TOOL USE]'):].strip()}")
@@ -468,20 +591,17 @@ class ClaudeBot(botpy.Client):
             send_approve(self.session)
             return
 
-        # 处理附件（图片等）
+        # 处理附件（图片、语音等）
         attachments_info = ""
         if hasattr(message, 'attachments') and message.attachments:
             try:
-                # attachments 可能是字符串、列表或对象
                 atts = message.attachments
                 if isinstance(atts, str):
                     atts = json.loads(atts)
                 elif not isinstance(atts, list):
-                    # 可能是单个对象或可迭代对象
                     atts = list(atts) if hasattr(atts, '__iter__') else [atts]
 
                 for att in atts:
-                    # 支持 dict 和对象两种形式
                     if isinstance(att, dict):
                         content_type = att.get('content_type', '')
                         url = att.get('url', '')
@@ -494,8 +614,19 @@ class ClaudeBot(botpy.Client):
                     if content_type.startswith('image/'):
                         attachments_info += f"\n[图片: {filename}]\n图片URL: {url}\n"
                         self._external_logger.info(f"收到图片附件: {filename}")
-                    elif content_type.startswith('audio/'):
-                        attachments_info += f"\n[语音: {filename}]\n语音URL: {url}\n"
+                    elif content_type == 'voice' or content_type.startswith('audio/'):
+                        # 自动处理语音：下载 → 转码 → 转文字
+                        text, local_path, status = process_voice_attachment(
+                            url, filename, self._project_dir, self._external_logger
+                        )
+                        if status == 'success' and text:
+                            attachments_info += f"\n[语音转文字]: {text}\n"
+                        elif status == 'convert_failed':
+                            attachments_info += f"\n[转码失败]\n"
+                        elif status == 'transcribe_failed':
+                            attachments_info += f"\n[语音太短无法识别]\n"
+                        else:
+                            attachments_info += f"\n[语音: {filename}]\n语音URL: {url}\n"
                     elif content_type.startswith('video/'):
                         attachments_info += f"\n[视频: {filename}]\n视频URL: {url}\n"
                     else:
@@ -638,6 +769,7 @@ def main():
         watcher=watcher,
         log_handler=log_handler,
         logger=logger,
+        project_dir=project_dir,
         auto_approve=args.auto_approve,
         intents=intents,
     )
