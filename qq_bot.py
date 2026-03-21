@@ -19,7 +19,6 @@ import asyncio
 import argparse
 import subprocess
 import logging
-import tempfile
 import shutil
 from datetime import datetime
 from logging.handlers import RotatingFileHandler
