@@ -25,7 +25,7 @@ from logging.handlers import RotatingFileHandler
 from urllib.request import urlopen
 
 # 复用 tmux_claude_log.py 的核心组件
-from tmux_claude_log import ProjectWatcher, extract_message, project_dir_to_internal, send_approve, send_to_tmux, check_claudemd_refresh
+from tmux_claude_log import ProjectWatcher, extract_message, project_dir_to_internal, send_approve, send_to_tmux, check_claudemd_refresh, check_tmux_session
 
 try:
     import botpy
@@ -716,13 +716,6 @@ def setup_logging(log_file=None):
         logger.addHandler(file_handler)
 
     return logger
-
-
-def check_tmux_session(session_name):
-    """检查 tmux session 是否存在"""
-    return subprocess.run(
-        ["tmux", "has-session", "-t", session_name], capture_output=True
-    ).returncode == 0
 
 
 def main():
