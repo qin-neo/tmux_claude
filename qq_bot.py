@@ -260,7 +260,7 @@ class ClaudeBot(botpy.Client):
                         send_approve(self.session)
                         self._external_logger.info("[tmux_claude auto approve]")
                     else:
-                        await self._send_to_user("[权限请求] 请回复数字选择（如 1、2、3）")
+                        await self._send_to_user("[权限请求] 1=同意，其他到界面查看")
 
                 now = time.monotonic()
                 if now - last_session_check >= SESSION_CHECK_INTERVAL:
