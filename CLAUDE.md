@@ -14,6 +14,7 @@ tmux wrapper for managing Claude CLI processes with automatic logging.
 ./tmux_claude.sh /path/to/project        # Start session (auto-attach)
 ./tmux_claude.sh /path/to/project all_yes # Auto-approve mode
 ./tmux_claude.sh /path/to/project --daemon # Background mode
+./tmux_claude.sh /path/to/project --load-md # Load CLAUDE.md on startup
 ./tmux_claude.sh /path/to/project stop   # Stop session
 ```
 

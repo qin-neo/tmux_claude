@@ -47,8 +47,11 @@ ln -s $(pwd)/tmux_claude.sh /usr/local/bin/tmux_claude
 # 后台模式启动（不附加到 tmux）
 ./tmux_claude.sh /path/to/project --daemon
 
-# 组合：自动确认 + 后台模式
-./tmux_claude.sh /path/to/project all_yes --daemon
+# 启动时读取 CLAUDE.md
+./tmux_claude.sh /path/to/project --load-md
+
+# 组合：自动确认 + 后台模式 + 读取 CLAUDE.md
+./tmux_claude.sh /path/to/project all_yes --daemon --load-md
 
 # 指定自定义 claude 启动命令
 ./tmux_claude.sh /path/to/project --claude "claude"
