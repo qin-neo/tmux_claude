@@ -219,6 +219,8 @@ class ClaudeBot(botpy.Client):
 
         while True:
             try:
+                # 跟踪本次 poll 是否有待响应的权限请求
+                pending_approval = False
                 for obj in self.watcher.poll(timeout=self._check_interval):
                     lines, needs_approve = extract_message(obj, state)
                     for line in lines:
@@ -242,17 +244,23 @@ class ClaudeBot(botpy.Client):
                         elif line.startswith("[TOOL USE]"):
                             await self._send_to_user(f"[工具调用] {line[len('[TOOL USE]'):].strip()}")
                         elif line.startswith("[TOOL RESULT]"):
+                            # 收到 tool_result，说明权限已被响应
+                            pending_approval = False
                             await self._send_to_user(f"[工具结果] {line[len('[TOOL RESULT]'):].strip()[:200]}...")
                         elif line.startswith("[TOOL ERROR]"):
+                            pending_approval = False
                             await self._send_to_user(f"[工具错误] {line[len('[TOOL ERROR]'):].strip()[:200]}...")
 
                     if needs_approve:
-                        if self._auto_approve:
-                            send_approve(self.session)
-                            self._external_logger.info("[tmux_claude auto approve]")
-                        else:
-                            # 通知用户可以发送数字选择
-                            await self._send_to_user("[权限请求] 请回复数字选择（如 1、2、3）")
+                        pending_approval = True
+
+                # 只在 poll 结束后仍有待响应的权限请求时通知
+                if pending_approval:
+                    if self._auto_approve:
+                        send_approve(self.session)
+                        self._external_logger.info("[tmux_claude auto approve]")
+                    else:
+                        await self._send_to_user("[权限请求] 请回复数字选择（如 1、2、3）")
 
                 now = time.monotonic()
                 if now - last_session_check >= SESSION_CHECK_INTERVAL:

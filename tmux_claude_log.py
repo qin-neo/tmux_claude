@@ -144,7 +144,8 @@ def extract_message(obj, state):
         msg = obj.get("message", {})
         lines = []
         has_tool_use = False
-        waiting = state.get("permissionMode") == "default"
+        # 默认需要批准（permissionMode 未设置时视为 default）
+        waiting = state.get("permissionMode", "default") == "default"
         for block in msg.get("content", []):
             if block.get("type") == "text":
                 text = _clean_text(block.get("text", ""))
