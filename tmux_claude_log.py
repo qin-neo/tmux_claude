@@ -352,7 +352,7 @@ def check_claudemd_refresh(session_name, last_check, interval=CLAUDEMD_INTERVAL)
     return last_check
 
 
-def watch_loop(watcher, logger, session_name, stop_event, auto_approve):
+def watch_loop(watcher, logger, session_name, stop_event, auto_approve, load_md=False):
     last_session_check = time.monotonic()
     last_claudemd_read = time.monotonic()
     state = {}
@@ -392,7 +392,8 @@ def watch_loop(watcher, logger, session_name, stop_event, auto_approve):
                 print(f"[INFO] tmux session '{session_name}' 已结束，退出", file=sys.stderr)
                 break
 
-        last_claudemd_read = check_claudemd_refresh(session_name, last_claudemd_read)
+        if load_md:
+            last_claudemd_read = check_claudemd_refresh(session_name, last_claudemd_read)
 
 
 def main():
@@ -402,6 +403,7 @@ def main():
     parser.add_argument("--log-dir", required=True, help="log 文件存放目录")
     parser.add_argument("--claude-dir", required=True, help="claude 数据目录 (~/.claude)")
     parser.add_argument("--auto-approve", action="store_true", help="自动确认所有权限请求")
+    parser.add_argument("--load-md", action="store_true", help="启动时读取 CLAUDE.md")
     args = parser.parse_args()
 
     project_dir = os.path.abspath(args.project_dir)
@@ -431,7 +433,7 @@ def main():
     signal.signal(signal.SIGINT, signal_handler)
 
     try:
-        watch_loop(watcher, logger, args.session, stop_event, args.auto_approve)
+        watch_loop(watcher, logger, args.session, stop_event, args.auto_approve, args.load_md)
     finally:
         watcher.close()
         print(f"[INFO] claude_log 已退出: project={project_dir}", file=sys.stderr)

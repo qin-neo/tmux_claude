@@ -38,6 +38,7 @@ usage() {
     echo "选项:"
     echo "  --all-yes     自动确认所有权限请求"
     echo "  --daemon      后台启动，不 attach tmux"
+    echo "  --load-md     启动时读取 CLAUDE.md"
     echo "  --claude CMD  指定 claude 启动命令 (默认: $DEFAULT_CLAUDE_CMD)"
     echo ""
     echo "示例:"
@@ -94,6 +95,7 @@ esac
 # 解析选项
 DAEMON_MODE=false
 AUTO_APPROVE=false
+LOAD_MD=false
 CLAUDE_CMD="$DEFAULT_CLAUDE_CMD"
 
 while [[ $# -gt 0 ]]; do
@@ -104,6 +106,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --daemon)
             DAEMON_MODE=true
+            shift
+            ;;
+        --load-md)
+            LOAD_MD=true
             shift
             ;;
         --claude)
@@ -179,6 +185,9 @@ do_start() {
                 QQ_ARGS="$QQ_ARGS --auto-approve"
                 echo "已启用自动确认模式 (--all-yes)"
             fi
+            if [[ "$LOAD_MD" == "true" ]]; then
+                QQ_ARGS="$QQ_ARGS --load-md"
+            fi
             TMUX_CMD="python3 '$QQ_SCRIPT' $QQ_ARGS > /dev/null 2>&1 & $TMUX_CMD"
         else
             echo "警告: 找不到 $QQ_SCRIPT，跳过 QQ Bot"
@@ -189,6 +198,9 @@ do_start() {
         if [[ "$AUTO_APPROVE" == "true" ]]; then
             LOG_ARGS="$LOG_ARGS --auto-approve"
             echo "已启用自动确认模式 (--all-yes)"
+        fi
+        if [[ "$LOAD_MD" == "true" ]]; then
+            LOG_ARGS="$LOG_ARGS --load-md"
         fi
         TMUX_CMD="python3 '$LOG_SCRIPT' $LOG_ARGS > /dev/null 2>&1 & $TMUX_CMD"
     fi

@@ -184,7 +184,7 @@ def setup_log_file(log_file):
 class ClaudeBot(botpy.Client):
     """QQ Bot 客户端"""
 
-    def __init__(self, session, watcher, log_handler, logger, project_dir=None, auto_approve=False, **kwargs):
+    def __init__(self, session, watcher, log_handler, logger, project_dir=None, auto_approve=False, load_md=False, **kwargs):
         super().__init__(**kwargs)
         self.session = session
         self.watcher = watcher
@@ -192,6 +192,7 @@ class ClaudeBot(botpy.Client):
         self._check_interval = 0.5
         self._external_logger = logger
         self._auto_approve = auto_approve
+        self._load_md = load_md
         self._test_c2c_openid = None
         self._config_path = None
         self._project_dir = project_dir
@@ -205,8 +206,8 @@ class ClaudeBot(botpy.Client):
         """Bot 就绪"""
         self._external_logger.info(f"Claude Bot 已就绪，session: {self.session}")
         await self._send_online_notification()
-        # 启动时触发读取 CLAUDE.md 创建定时任务
-        send_to_tmux(self.session, "read CLAUDE.md, auto create 定时任务")
+        if self._load_md:
+            send_to_tmux(self.session, "read CLAUDE.md, auto create 定时任务")
         asyncio.create_task(self._listen_forever())
 
     async def _listen_forever(self):
@@ -726,6 +727,7 @@ def main():
     parser.add_argument("--claude-dir", required=True, help="claude 数据目录 (~/.claude)")
     parser.add_argument("--config", required=True, help="QQ Bot 配置文件路径")
     parser.add_argument("--auto-approve", action="store_true", help="自动确认所有权限请求")
+    parser.add_argument("--load-md", action="store_true", help="启动时读取 CLAUDE.md")
     args = parser.parse_args()
 
     project_dir = os.path.abspath(args.project_dir)
@@ -780,6 +782,7 @@ def main():
         logger=logger,
         project_dir=project_dir,
         auto_approve=args.auto_approve,
+        load_md=args.load_md,
         intents=intents,
     )
 
