@@ -206,6 +206,8 @@ class ClaudeBot(botpy.Client):
         """Bot 就绪"""
         self._external_logger.info(f"Claude Bot 已就绪，session: {self.session}")
         await self._send_online_notification()
+        # 启动时触发读取 CLAUDE.md 创建定时任务
+        send_to_tmux(self.session, "read CLAUDE.md, auto create 定时任务")
         asyncio.create_task(self._listen_forever())
 
     async def _listen_forever(self):
