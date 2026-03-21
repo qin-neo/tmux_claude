@@ -29,6 +29,13 @@ tmux wrapper for managing Claude CLI processes with automatic logging.
 - Concise comments (only for non-obvious logic)
 - 有疑问就问，不允许自作主张
 
+## Projects (hk2)
+
+| 项目 | 路径 | 说明 |
+|------|------|------|
+| war | ~/war | 部署脚本 |
+| todo-list | ~/todo-list | 语音待办清单助手 |
+
 ## Deployment
 
 Confirm before push to github when user says "deploy".

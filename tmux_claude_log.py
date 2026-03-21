@@ -181,6 +181,20 @@ def _format_tool_use(name, inp):
         return _truncate(inp.get("command", ""))
     if name in ("ListDir", "LS"):
         return inp.get("path", inp.get("dir_path", ""))
+    if name == "AskUserQuestion":
+        # 格式化选项列表
+        questions = inp.get("questions", [])
+        parts = []
+        for q in questions:
+            question_text = q.get("question", "")
+            options = q.get("options", [])
+            if question_text:
+                parts.append(question_text)
+            for i, opt in enumerate(options, 1):
+                label = opt.get("label", "")
+                desc = opt.get("description", "")
+                parts.append(f"  {i}. {label}" + (f" - {desc}" if desc else ""))
+        return "\n".join(parts) if parts else ""
     return _truncate(json.dumps(inp, ensure_ascii=False))
 
 

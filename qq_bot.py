@@ -587,9 +587,16 @@ class ClaudeBot(botpy.Client):
 
         content = message.content.strip()
 
-        # 用户发送纯数字，发送 Enter 确认权限选择
+        # 用户发送纯数字，发送方向键+Enter 确认权限选择
+        # 1 = 直接 Enter（默认第一项）
+        # 2 = Down + Enter
+        # 3 = Down + Down + Enter
         if content.isdigit():
+            n = int(content)
             self._external_logger.info(f"权限选择: {content}")
+            for _ in range(n - 1):
+                subprocess.run(["tmux", "send-keys", "-t", self.session, "Down"], capture_output=True)
+                time.sleep(0.05)
             send_approve(self.session)
             return
 

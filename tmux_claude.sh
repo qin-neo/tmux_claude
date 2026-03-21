@@ -220,7 +220,7 @@ do_start() {
 
 # === restart 命令 ===
 do_restart() {
-    # 检测当前是否有 --auto-approve
+    # 先检测当前是否有 --auto-approve（在 stop 之前）
     if pgrep -f "qq_bot.py.*--session ${SESSION_NAME}.*--auto-approve" > /dev/null 2>&1; then
         AUTO_APPROVE=true
     elif pgrep -f "tmux_claude_log.py.*--session ${SESSION_NAME}.*--auto-approve" > /dev/null 2>&1; then
