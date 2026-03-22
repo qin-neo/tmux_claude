@@ -13,8 +13,20 @@ tmux wrapper for managing Claude CLI processes with automatic logging.
 ```bash
 ./tmux_claude.sh /path/to/project        # Start session (auto-attach)
 ./tmux_claude.sh /path/to/project --daemon # Background mode
+./tmux_claude.sh /path/to/project --all-yes # Auto-approve mode
+./tmux_claude.sh /path/to/project --claude my-cli # Use my-cli
 ./tmux_claude.sh /path/to/project stop   # Stop session
 ```
+
+## Options
+
+| Option | Description |
+|--------|-------------|
+| `--daemon` | Background mode (no attach) |
+| `--all-yes` | Auto-approve all permissions (override config) |
+| `--claude CMD` | Specify claude command (default: `claude --effort max`) |
+
+CLAUDE_DIR is inferred from `--claude`: `claude` → `~/.claude`, `my-cli` → `~/.my-cli`
 
 ## Config: tmux_claude.json
 
@@ -49,7 +61,7 @@ Place in project directory:
 
 ## Files
 
-- JSONL: `~/.claude/projects/<dir_with_dashes>/`
+- JSONL: `<CLAUDE_DIR>/projects/<dir_with_dashes>/`
 - Log: `<dir>/tmux_claude.log` (10MB × 100 backups)
 
 ## Code Style

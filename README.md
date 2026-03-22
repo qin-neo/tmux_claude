@@ -41,12 +41,27 @@ ln -s $(pwd)/tmux_claude.sh /usr/local/bin/tmux_claude
 # 后台模式启动（不附加到 tmux）
 ./tmux_claude.sh /path/to/project --daemon
 
-# 停止会话
-./tmux_claude.sh /path/to/project stop
+# 自动确认所有权限请求
+./tmux_claude.sh /path/to/project --all-yes
 
 # 指定自定义 claude 启动命令
-./tmux_claude.sh /path/to/project --claude "claude"
+./tmux_claude.sh /path/to/project --claude "my-cli"
+
+# 停止会话
+./tmux_claude.sh /path/to/project stop
 ```
+
+### 命令行选项
+
+| 选项 | 说明 |
+|------|------|
+| `--daemon` | 后台启动，不附加到 tmux |
+| `--all-yes` | 自动确认所有权限请求（覆盖配置文件） |
+| `--claude CMD` | 指定 claude 命令（默认: `claude --effort max`） |
+
+**CLAUDE_DIR 推断**：根据 `--claude` 参数推断数据目录
+- `claude` → `~/.claude`
+- `my-cli` → `~/.my-cli`
 
 ## 配置文件
 
@@ -97,12 +112,15 @@ ln -s $(pwd)/tmux_claude.sh /usr/local/bin/tmux_claude
 
 对于项目目录 `<dir>`：
 
-- **JSONL 数据源**: `~/.claude/projects/<dir_with_slashes_replaced_by_dashes>/`
+- **JSONL 数据源**: `<CLAUDE_DIR>/projects/<dir_with_slashes_replaced_by_dashes>/`
 - **日志文件**: `<dir>/tmux_claude.log`（以及 `.1` 到 `.100` 轮转备份）
 
-例如，项目目录为 `/root/myproject`，则：
+例如，项目目录为 `/root/myproject`，使用默认 `claude` 命令：
 - JSONL 源目录: `~/.claude/projects/-root-myproject/`
 - 日志文件: `/root/myproject/tmux_claude.log`
+
+使用 `--claude my-cli` 时：
+- JSONL 源目录: `~/.my-cli/projects/-root-myproject/`
 
 ## 日志格式示例
 
