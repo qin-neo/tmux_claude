@@ -185,7 +185,7 @@ do_start() {
     fi
 
     # tmux 启动命令：log 守护进程后台运行，claude 前台
-    TMUX_CMD="python3 '$LOG_SCRIPT' $LOG_ARGS > /dev/null 2>&1 & export LANG=C.UTF-8; $CLAUDE_CMD --continue || $CLAUDE_CMD"
+    TMUX_CMD="python3 '$LOG_SCRIPT' $LOG_ARGS > /dev/null 2>&1 & $CLAUDE_CMD --continue || $CLAUDE_CMD"
 
     # 启动 tmux session
     tmux new-session -d -s "$SESSION_NAME" -c "$DIR_ABS" "$TMUX_CMD"
