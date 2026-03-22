@@ -15,6 +15,7 @@ tmux wrapper for managing Claude CLI processes with automatic logging.
 ./tmux_claude.sh /path/to/project --daemon # Background mode
 ./tmux_claude.sh /path/to/project --all-yes # Auto-approve mode
 ./tmux_claude.sh /path/to/project --claude my-cli # Use my-cli
+./tmux_claude.sh /path/to/project restart # Restart session
 ./tmux_claude.sh /path/to/project stop   # Stop session
 ```
 
@@ -84,5 +85,15 @@ Confirm before push to github when user says "deploy".
 
 ```bash
 scp tmux_claude.sh tmux_claude_log.py qq_bot.py hk2:~/tmux_claude/
-ssh hk2 'bash -i -c "tmux_claude war --daemon"'
+ssh hk2 'bash -i -c "tmux_claude war restart --daemon"'
 ```
+
+hk2 restart: `tmux_claude <project> stop` 后用 `--daemon` 模式启动
+
+## Self-restart
+
+自己重启自己时，stop 会杀死当前进程导致无法执行后续启动命令。解决方案：
+```bash
+nohup ./tmux_claude.sh /root/tmux_claude restart --daemon > /tmp/restart.log 2>&1 &
+```
+用 nohup 后台执行 restart 命令。

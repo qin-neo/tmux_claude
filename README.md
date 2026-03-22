@@ -47,6 +47,9 @@ ln -s $(pwd)/tmux_claude.sh /usr/local/bin/tmux_claude
 # 指定自定义 claude 启动命令
 ./tmux_claude.sh /path/to/project --claude "my-cli"
 
+# 重启会话
+./tmux_claude.sh /path/to/project restart
+
 # 停止会话
 ./tmux_claude.sh /path/to/project stop
 ```
