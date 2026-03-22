@@ -43,6 +43,7 @@ usage() {
     echo ""
     echo "选项:"
     echo "  --daemon      后台启动，不 attach tmux"
+    echo "  --all-yes     自动确认所有权限请求 (覆盖配置文件)"
     echo "  --claude CMD  指定 claude 启动命令 (默认: $DEFAULT_CLAUDE_CMD)"
     echo ""
     echo "配置文件: <dir>/tmux_claude.json"
@@ -54,6 +55,7 @@ usage() {
     echo "示例:"
     echo "  $0 /root/todo-list"
     echo "  $0 /root/todo-list --daemon"
+    echo "  $0 /root/todo-list --all-yes"
     echo "  $0 /root/todo-list stop"
 }
 
@@ -102,12 +104,17 @@ esac
 
 # 解析选项
 DAEMON_MODE=false
+ALL_YES=false
 CLAUDE_CMD="$DEFAULT_CLAUDE_CMD"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --daemon)
             DAEMON_MODE=true
+            shift
+            ;;
+        --all-yes)
+            ALL_YES=true
             shift
             ;;
         --claude)
@@ -171,8 +178,14 @@ do_start() {
         exec tmux attach -d -t "$SESSION_NAME"
     fi
 
+    # 构建 log 脚本参数
+    LOG_ARGS="'$DIR_ABS' --session '$SESSION_NAME'"
+    if [[ "$ALL_YES" == "true" ]]; then
+        LOG_ARGS="$LOG_ARGS --all-yes"
+    fi
+
     # tmux 启动命令：log 守护进程后台运行，claude 前台
-    TMUX_CMD="python3 '$LOG_SCRIPT' '$DIR_ABS' --session '$SESSION_NAME' > /dev/null 2>&1 & export LANG=C.UTF-8; $CLAUDE_CMD --continue || $CLAUDE_CMD"
+    TMUX_CMD="python3 '$LOG_SCRIPT' $LOG_ARGS > /dev/null 2>&1 & export LANG=C.UTF-8; $CLAUDE_CMD --continue || $CLAUDE_CMD"
 
     # 启动 tmux session
     tmux new-session -d -s "$SESSION_NAME" -c "$DIR_ABS" "$TMUX_CMD"

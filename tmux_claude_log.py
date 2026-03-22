@@ -420,6 +420,7 @@ def main():
     parser.add_argument("project_dir", help="claude 项目的绝对路径")
     parser.add_argument("--session", help="tmux session 名称 (默认: 目录名)")
     parser.add_argument("--claude-dir", default="~/.claude", help="claude 数据目录")
+    parser.add_argument("--all-yes", action="store_true", help="自动确认所有权限请求 (覆盖配置文件)")
     args = parser.parse_args()
 
     project_dir = os.path.abspath(os.path.expanduser(args.project_dir))
@@ -432,7 +433,7 @@ def main():
 
     # 加载配置
     config = load_config(project_dir)
-    auto_approve = config.get("auto_approve", False)
+    auto_approve = args.all_yes or config.get("auto_approve", False)
     load_md = config.get("load_md", False)
     detail = config.get("detail", False)
     qq_config = config.get("qq_bot")
