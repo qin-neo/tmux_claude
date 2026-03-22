@@ -39,6 +39,7 @@ usage() {
     echo "  --all-yes     自动确认所有权限请求"
     echo "  --daemon      后台启动，不 attach tmux"
     echo "  --load-md     启动时读取 CLAUDE.md"
+    echo "  --detail      发送工具结果到 QQ (仅 QQ Bot，默认只发工具调用)"
     echo "  --claude CMD  指定 claude 启动命令 (默认: $DEFAULT_CLAUDE_CMD)"
     echo ""
     echo "示例:"
@@ -96,6 +97,7 @@ esac
 DAEMON_MODE=false
 AUTO_APPROVE=false
 LOAD_MD=false
+DETAIL=false
 CLAUDE_CMD="$DEFAULT_CLAUDE_CMD"
 
 while [[ $# -gt 0 ]]; do
@@ -110,6 +112,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --load-md)
             LOAD_MD=true
+            shift
+            ;;
+        --detail)
+            DETAIL=true
             shift
             ;;
         --claude)
@@ -187,6 +193,9 @@ do_start() {
             fi
             if [[ "$LOAD_MD" == "true" ]]; then
                 QQ_ARGS="$QQ_ARGS --load-md"
+            fi
+            if [[ "$DETAIL" == "true" ]]; then
+                QQ_ARGS="$QQ_ARGS --detail"
             fi
             TMUX_CMD="python3 '$QQ_SCRIPT' $QQ_ARGS > /dev/null 2>&1 & $TMUX_CMD"
         else

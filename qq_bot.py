@@ -184,7 +184,7 @@ def setup_log_file(log_file):
 class ClaudeBot(botpy.Client):
     """QQ Bot 客户端"""
 
-    def __init__(self, session, watcher, log_handler, logger, project_dir=None, auto_approve=False, load_md=False, **kwargs):
+    def __init__(self, session, watcher, log_handler, logger, project_dir=None, auto_approve=False, load_md=False, detail=False, **kwargs):
         super().__init__(**kwargs)
         self.session = session
         self.watcher = watcher
@@ -193,6 +193,7 @@ class ClaudeBot(botpy.Client):
         self._external_logger = logger
         self._auto_approve = auto_approve
         self._load_md = load_md
+        self._detail = detail
         self._test_c2c_openid = None
         self._config_path = None
         self._project_dir = project_dir
@@ -242,14 +243,18 @@ class ClaudeBot(botpy.Client):
                                     return
                                 await self._send_to_user(f"[用户] {text}")
                         elif line.startswith("[TOOL USE]"):
-                            await self._send_to_user(f"[工具调用] {line[len('[TOOL USE]'):].strip()}")
+                            # --detail 或 非 --all-yes 时发送
+                            if self._detail or not self._auto_approve:
+                                await self._send_to_user(f"[工具调用] {line[len('[TOOL USE]'):].strip()}")
                         elif line.startswith("[TOOL RESULT]"):
                             # 收到 tool_result，说明权限已被响应
                             pending_approval = False
-                            await self._send_to_user(f"[工具结果] {line[len('[TOOL RESULT]'):].strip()[:200]}...")
+                            if self._detail:
+                                await self._send_to_user(f"[工具结果] {line[len('[TOOL RESULT]'):].strip()[:200]}...")
                         elif line.startswith("[TOOL ERROR]"):
                             pending_approval = False
-                            await self._send_to_user(f"[工具错误] {line[len('[TOOL ERROR]'):].strip()[:200]}...")
+                            if self._detail:
+                                await self._send_to_user(f"[工具错误] {line[len('[TOOL ERROR]'):].strip()[:200]}...")
 
                     if needs_approve:
                         pending_approval = True
@@ -728,6 +733,7 @@ def main():
     parser.add_argument("--config", required=True, help="QQ Bot 配置文件路径")
     parser.add_argument("--auto-approve", action="store_true", help="自动确认所有权限请求")
     parser.add_argument("--load-md", action="store_true", help="启动时读取 CLAUDE.md")
+    parser.add_argument("--detail", action="store_true", help="发送工具结果到 QQ (默认只发工具调用)")
     args = parser.parse_args()
 
     project_dir = os.path.abspath(args.project_dir)
@@ -783,6 +789,7 @@ def main():
         project_dir=project_dir,
         auto_approve=args.auto_approve,
         load_md=args.load_md,
+        detail=args.detail,
         intents=intents,
     )
 

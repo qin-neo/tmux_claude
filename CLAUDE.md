@@ -15,8 +15,18 @@ tmux wrapper for managing Claude CLI processes with automatic logging.
 ./tmux_claude.sh /path/to/project all_yes # Auto-approve mode
 ./tmux_claude.sh /path/to/project --daemon # Background mode
 ./tmux_claude.sh /path/to/project --load-md # Load CLAUDE.md on startup
+./tmux_claude.sh /path/to/project --detail  # Send tool results to QQ (QQ Bot only)
 ./tmux_claude.sh /path/to/project stop   # Stop session
 ```
+
+## QQ Bot Options
+
+| Option | Tool Use | Tool Result |
+|--------|----------|-------------|
+| (none) | ✓ | ✗ |
+| --all-yes | ✗ | ✗ |
+| --detail | ✓ | ✓ |
+| --all-yes --detail | ✓ | ✓ |
 
 ## Files
 

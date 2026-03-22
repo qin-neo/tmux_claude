@@ -53,9 +53,21 @@ ln -s $(pwd)/tmux_claude.sh /usr/local/bin/tmux_claude
 # 组合：自动确认 + 后台模式 + 读取 CLAUDE.md
 ./tmux_claude.sh /path/to/project all_yes --daemon --load-md
 
+# QQ Bot：发送工具结果到 QQ
+./tmux_claude.sh /path/to/project --detail
+
 # 指定自定义 claude 启动命令
 ./tmux_claude.sh /path/to/project --claude "claude"
 ```
+
+### QQ Bot 消息选项
+
+| 选项 | 工具调用 | 工具结果 |
+|------|----------|----------|
+| 无 | ✓ | ✗ |
+| --all-yes | ✗ | ✗ |
+| --detail | ✓ | ✓ |
+| --all-yes --detail | ✓ | ✓ |
 
 ### QQ Bot 远程控制（实验性）
 
