@@ -16,7 +16,6 @@ import time
 import re
 import base64
 import asyncio
-import argparse
 import subprocess
 import logging
 import shutil
@@ -724,38 +723,21 @@ def setup_logging(log_file=None):
     return logger
 
 
-def main():
-    parser = argparse.ArgumentParser(description="QQ Bot for tmux_claude")
-    parser.add_argument("--project-dir", required=True, help="claude 项目的绝对路径")
-    parser.add_argument("--session", required=True, help="tmux session 名称")
-    parser.add_argument("--log-dir", required=True, help="log 文件存放目录")
-    parser.add_argument("--claude-dir", required=True, help="claude 数据目录 (~/.claude)")
-    parser.add_argument("--config", required=True, help="QQ Bot 配置文件路径")
-    parser.add_argument("--auto-approve", action="store_true", help="自动确认所有权限请求")
-    parser.add_argument("--load-md", action="store_true", help="启动时读取 CLAUDE.md")
-    parser.add_argument("--detail", action="store_true", help="发送工具结果到 QQ (默认只发工具调用)")
-    args = parser.parse_args()
+def run_qq_bot(session, project_dir, log_dir, claude_dir, qq_config, auto_approve=False, load_md=False, detail=False):
+    """启动 QQ Bot，供 tmux_claude_log.py 调用"""
+    project_dir = os.path.abspath(project_dir)
+    log_dir = os.path.abspath(log_dir)
 
-    project_dir = os.path.abspath(args.project_dir)
-    log_dir = os.path.abspath(args.log_dir)
-
-    if not os.path.exists(args.config):
-        print(f"错误: 配置文件不存在: {args.config}", file=sys.stderr)
-        sys.exit(1)
-
-    with open(args.config, "r") as f:
-        config = json.load(f)
-
-    appid = config.get("appid")
-    secret = config.get("secret")
-    test_c2c_openid = config.get("test_c2c_openid")
+    appid = qq_config.get("appid")
+    secret = qq_config.get("secret")
+    test_c2c_openid = qq_config.get("test_c2c_openid")
 
     if not appid or not secret:
-        print("错误: 配置文件缺少 appid 或 secret", file=sys.stderr)
+        print("错误: 配置缺少 appid 或 secret", file=sys.stderr)
         sys.exit(1)
 
-    if not check_tmux_session(args.session):
-        print(f"错误: tmux session '{args.session}' 不存在", file=sys.stderr)
+    if not check_tmux_session(session):
+        print(f"错误: tmux session '{session}' 不存在", file=sys.stderr)
         sys.exit(1)
 
     log_file = os.path.join(log_dir, "qq_bot.log")
@@ -764,7 +746,7 @@ def main():
     claude_log_file = os.path.join(log_dir, "tmux_claude.log")
     log_handler = setup_log_file(claude_log_file)
 
-    internal_dir = os.path.join(args.claude_dir, "projects", project_dir_to_internal(project_dir))
+    internal_dir = os.path.join(claude_dir, "projects", project_dir_to_internal(project_dir))
     if not os.path.isdir(internal_dir):
         print(f"错误: claude 数据目录不存在: {internal_dir}", file=sys.stderr)
         print("该项目可能尚未被 claude 打开过", file=sys.stderr)
@@ -772,38 +754,28 @@ def main():
 
     watcher = ProjectWatcher(internal_dir, skip_existing=True)
 
-    print(f"[INFO] QQ Bot 启动: session={args.session}, log={log_file}", file=sys.stderr)
-    print(f"[INFO] Claude log: {claude_log_file}", file=sys.stderr)
+    print(f"[INFO] QQ Bot 启动: session={session}, log={log_file}", file=sys.stderr)
 
-    # 创建 Bot
     intents = botpy.Intents(
         public_messages=True,
         direct_message=True,
     )
 
     client = ClaudeBot(
-        session=args.session,
+        session=session,
         watcher=watcher,
         log_handler=log_handler,
         logger=logger,
         project_dir=project_dir,
-        auto_approve=args.auto_approve,
-        load_md=args.load_md,
-        detail=args.detail,
+        auto_approve=auto_approve,
+        load_md=load_md,
+        detail=detail,
         intents=intents,
     )
 
-    client.set_test_target(
-        c2c_openid=test_c2c_openid,
-        config_path=args.config,
-    )
+    client.set_test_target(c2c_openid=test_c2c_openid)
 
-    # 运行 Bot
     try:
         client.run(appid=appid, secret=secret)
     finally:
         watcher.close()
-
-
-if __name__ == "__main__":
-    main()

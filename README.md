@@ -6,7 +6,7 @@
 
 - 在 tmux 会话中启动 Claude CLI，支持后台运行
 - 自动监控并记录对话日志到文件
-- 支持自动确认权限请求（all_yes 模式）
+- 支持自动确认权限请求
 - 日志文件自动轮转（单文件 10MB，最多保留 100 个备份）
 - 会话结束后自动退出守护进程
 - **QQ Bot 集成** - 通过 QQ 消息远程控制 Claude
@@ -38,61 +38,60 @@ ln -s $(pwd)/tmux_claude.sh /usr/local/bin/tmux_claude
 # 在指定目录启动 Claude 会话（自动附加到 tmux）
 ./tmux_claude.sh /path/to/project
 
-# 启动并自动确认所有权限请求
-./tmux_claude.sh /path/to/project all_yes
-
-# 停止会话及其日志守护进程
-./tmux_claude.sh /path/to/project stop
-
 # 后台模式启动（不附加到 tmux）
 ./tmux_claude.sh /path/to/project --daemon
 
-# 启动时读取 CLAUDE.md
-./tmux_claude.sh /path/to/project --load-md
-
-# 组合：自动确认 + 后台模式 + 读取 CLAUDE.md
-./tmux_claude.sh /path/to/project all_yes --daemon --load-md
-
-# QQ Bot：发送工具结果到 QQ
-./tmux_claude.sh /path/to/project --detail
+# 停止会话
+./tmux_claude.sh /path/to/project stop
 
 # 指定自定义 claude 启动命令
 ./tmux_claude.sh /path/to/project --claude "claude"
 ```
 
-### QQ Bot 消息选项
+## 配置文件
 
-| 选项 | 工具调用 | 工具结果 |
-|------|----------|----------|
-| 无 | ✓ | ✗ |
-| --all-yes | ✗ | ✗ |
-| --detail | ✓ | ✓ |
-| --all-yes --detail | ✓ | ✓ |
-
-### QQ Bot 远程控制（实验性）
-
-在项目目录下创建 `qq_bot_config.json`：
+在项目目录下创建 `tmux_claude.json`：
 
 ```json
 {
+  "auto_approve": false,
+  "load_md": false,
+  "detail": false,
+  "qq_bot": {
     "appid": "YOUR_APP_ID",
     "secret": "YOUR_BOT_SECRET",
     "test_c2c_openid": null
+  }
 }
 ```
 
-启动时检测到配置文件会自动启动 QQ Bot。目前仅验证了 C2C 单聊功能：发送消息到 QQ 即可远程控制 Claude，Claude 的回复会自动发送回 QQ。
+### 配置项说明
 
-首次使用时，`test_c2c_openid` 可留空，Bot 会在收到第一条 C2C 消息时自动记录发送者的 openid。
+| 字段 | 说明 |
+|------|------|
+| `auto_approve` | 自动确认所有权限请求 |
+| `load_md` | 启动时读取 CLAUDE.md |
+| `detail` | 发送工具结果到 QQ（仅 QQ Bot） |
+| `qq_bot` | QQ Bot 配置，省略则禁用 QQ Bot |
+
+### QQ Bot 消息选项
+
+| auto_approve | detail | 工具调用 | 工具结果 |
+|--------------|--------|----------|----------|
+| false | false | ✓ | ✗ |
+| true | false | ✗ | ✗ |
+| false | true | ✓ | ✓ |
+| true | true | ✓ | ✓ |
+
+首次使用 QQ Bot 时，`test_c2c_openid` 可留空，Bot 会在收到第一条 C2C 消息时自动记录发送者的 openid。
 
 ## 文件说明
 
 | 文件 | 说明 |
 |------|------|
 | `tmux_claude.sh` | 会话管理脚本 |
-| `tmux_claude_log.py` | 日志守护进程（无 QQ 配置时使用） |
-| `qq_bot.py` | QQ Bot 客户端（有 QQ 配置时使用） |
-| `qq_bot_config.json.example` | QQ Bot 配置模板 |
+| `tmux_claude_log.py` | 日志守护进程（主入口） |
+| `qq_bot.py` | QQ Bot 模块（被 tmux_claude_log.py 调用） |
 
 ## 日志文件位置
 
@@ -114,24 +113,6 @@ ln -s $(pwd)/tmux_claude.sh /usr/local/bin/tmux_claude
 2025-03-15 10:30:12 INFO [TOOL RESULT]
 文件已成功创建
 ```
-
-## 工作原理
-
-### tmux_claude.sh
-
-1. 解析参数，确定 claude 启动命令（默认 `claude --effort max`）
-2. 检测 claude 二进制是否存在
-3. 以目录名作为 tmux 会话名创建会话
-4. 在会话中执行 `$CLAUDE_CMD --continue`（失败则执行 `$CLAUDE_CMD`）
-5. 启动日志守护进程或 QQ Bot
-6. 附加到 tmux 会话
-
-### tmux_claude_log.py
-
-1. 使用 Linux inotify 监控 Claude 项目目录下的 JSONL 文件变化
-2. 解析新增的 JSONL 行，提取用户消息、助手回复、工具调用等信息
-3. 写入轮转日志文件
-4. 定期检查 tmux 会话是否存在，会话结束后自动退出
 
 ## 快捷键
 

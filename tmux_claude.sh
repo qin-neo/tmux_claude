@@ -4,14 +4,21 @@
 #
 # 用法:
 #   tmux_claude.sh                           列出活动的 tmux sessions
-#   tmux_claude.sh <dir> start [options]     启动会话
+#   tmux_claude.sh <dir> [start]             启动会话
 #   tmux_claude.sh <dir> stop                停止会话
-#   tmux_claude.sh <dir> restart [options]   重启会话
+#   tmux_claude.sh <dir> restart             重启会话
 #
 # 选项:
-#   --all-yes     自动确认所有权限请求
 #   --daemon      后台启动，不 attach tmux
 #   --claude CMD  指定 claude 启动命令
+#
+# 配置文件: <dir>/tmux_claude.json
+#   {
+#     "auto_approve": false,
+#     "load_md": false,
+#     "detail": false,
+#     "qq_bot": {"appid": "...", "secret": "...", "test_c2c_openid": "..."}
+#   }
 
 export LANG="C.UTF-8"
 export LC_ALL="C.UTF-8"
@@ -24,30 +31,30 @@ if ! command -v tmux &>/dev/null; then
     exit 1
 fi
 
-CLAUDE_DIR="$HOME/.claude"
 DEFAULT_CLAUDE_CMD="claude --effort max"
 
 usage() {
-    echo "用法: $0 <dir> <command> [options]"
+    echo "用法: $0 <dir> [command] [options]"
     echo ""
     echo "命令:"
-    echo "  start     启动会话"
+    echo "  start     启动会话 (默认)"
     echo "  stop      停止会话"
     echo "  restart   重启会话"
     echo ""
     echo "选项:"
-    echo "  --all-yes     自动确认所有权限请求"
     echo "  --daemon      后台启动，不 attach tmux"
-    echo "  --load-md     启动时读取 CLAUDE.md"
-    echo "  --detail      发送工具结果到 QQ (仅 QQ Bot，默认只发工具调用)"
     echo "  --claude CMD  指定 claude 启动命令 (默认: $DEFAULT_CLAUDE_CMD)"
     echo ""
-    echo "示例:"
-    echo "  $0 /root/todo-list start --all-yes --daemon"
-    echo "  $0 /root/todo-list stop"
-    echo "  $0 /root/todo-list restart"
+    echo "配置文件: <dir>/tmux_claude.json"
+    echo "  auto_approve: 自动确认权限"
+    echo "  load_md: 启动时读取 CLAUDE.md"
+    echo "  detail: 发送工具结果到 QQ"
+    echo "  qq_bot: QQ Bot 配置 (有则启用)"
     echo ""
-    echo "QQ Bot: 若项目目录下存在 qq_bot_config.json 则自动启动"
+    echo "示例:"
+    echo "  $0 /root/todo-list"
+    echo "  $0 /root/todo-list --daemon"
+    echo "  $0 /root/todo-list stop"
 }
 
 if [[ ! -f "$LOG_SCRIPT" ]]; then
@@ -95,27 +102,12 @@ esac
 
 # 解析选项
 DAEMON_MODE=false
-AUTO_APPROVE=false
-LOAD_MD=false
-DETAIL=false
 CLAUDE_CMD="$DEFAULT_CLAUDE_CMD"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --all-yes)
-            AUTO_APPROVE=true
-            shift
-            ;;
         --daemon)
             DAEMON_MODE=true
-            shift
-            ;;
-        --load-md)
-            LOAD_MD=true
-            shift
-            ;;
-        --detail)
-            DETAIL=true
             shift
             ;;
         --claude)
@@ -179,41 +171,8 @@ do_start() {
         exec tmux attach -d -t "$SESSION_NAME"
     fi
 
-    # 构建 tmux 启动命令
-    QQ_CONFIG="$DIR_ABS/qq_bot_config.json"
-    TMUX_CMD="export LANG=C.UTF-8; $CLAUDE_CMD --continue || $CLAUDE_CMD"
-
-    if [[ -f "$QQ_CONFIG" ]]; then
-        # 有 QQ 配置：qq_bot 后台运行，claude 前台
-        QQ_SCRIPT="$SCRIPT_DIR/qq_bot.py"
-        if [[ -f "$QQ_SCRIPT" ]]; then
-            QQ_ARGS="--project-dir '$DIR_ABS' --session '$SESSION_NAME' --log-dir '$DIR_ABS' --claude-dir '$CLAUDE_DIR' --config '$QQ_CONFIG'"
-            if [[ "$AUTO_APPROVE" == "true" ]]; then
-                QQ_ARGS="$QQ_ARGS --auto-approve"
-                echo "已启用自动确认模式 (--all-yes)"
-            fi
-            if [[ "$LOAD_MD" == "true" ]]; then
-                QQ_ARGS="$QQ_ARGS --load-md"
-            fi
-            if [[ "$DETAIL" == "true" ]]; then
-                QQ_ARGS="$QQ_ARGS --detail"
-            fi
-            TMUX_CMD="python3 '$QQ_SCRIPT' $QQ_ARGS > /dev/null 2>&1 & $TMUX_CMD"
-        else
-            echo "警告: 找不到 $QQ_SCRIPT，跳过 QQ Bot"
-        fi
-    else
-        # 无 QQ 配置：启动 log 守护进程（作为 tmux 子进程）
-        LOG_ARGS="--project-dir '$DIR_ABS' --session '$SESSION_NAME' --log-dir '$DIR_ABS' --claude-dir '$CLAUDE_DIR'"
-        if [[ "$AUTO_APPROVE" == "true" ]]; then
-            LOG_ARGS="$LOG_ARGS --auto-approve"
-            echo "已启用自动确认模式 (--all-yes)"
-        fi
-        if [[ "$LOAD_MD" == "true" ]]; then
-            LOG_ARGS="$LOG_ARGS --load-md"
-        fi
-        TMUX_CMD="python3 '$LOG_SCRIPT' $LOG_ARGS > /dev/null 2>&1 & $TMUX_CMD"
-    fi
+    # tmux 启动命令：log 守护进程后台运行，claude 前台
+    TMUX_CMD="python3 '$LOG_SCRIPT' '$DIR_ABS' --session '$SESSION_NAME' > /dev/null 2>&1 & export LANG=C.UTF-8; $CLAUDE_CMD --continue || $CLAUDE_CMD"
 
     # 启动 tmux session
     tmux new-session -d -s "$SESSION_NAME" -c "$DIR_ABS" "$TMUX_CMD"
@@ -242,13 +201,6 @@ do_start() {
 
 # === restart 命令 ===
 do_restart() {
-    # 先检测当前是否有 --auto-approve（在 stop 之前）
-    if pgrep -f "qq_bot.py.*--session ${SESSION_NAME}.*--auto-approve" > /dev/null 2>&1; then
-        AUTO_APPROVE=true
-    elif pgrep -f "tmux_claude_log.py.*--session ${SESSION_NAME}.*--auto-approve" > /dev/null 2>&1; then
-        AUTO_APPROVE=true
-    fi
-
     do_stop
     sleep 1
     do_start

@@ -4,29 +4,48 @@ tmux wrapper for managing Claude CLI processes with automatic logging.
 
 ## Components
 
-- **tmux_claude.sh** — Session manager (create/stop tmux sessions, auto-starts log daemon)
+- **tmux_claude.sh** — Session manager (create/stop tmux sessions)
 - **tmux_claude_log.py** — Log daemon (monitors JSONL → writes to rotating log)
-- **qq_bot.py** — QQ Bot client (log + send replies to QQ, requires `qq_bot_config.json`)
+- **qq_bot.py** — QQ Bot module (loaded by tmux_claude_log.py when configured)
 
 ## Usage
 
 ```bash
 ./tmux_claude.sh /path/to/project        # Start session (auto-attach)
-./tmux_claude.sh /path/to/project all_yes # Auto-approve mode
 ./tmux_claude.sh /path/to/project --daemon # Background mode
-./tmux_claude.sh /path/to/project --load-md # Load CLAUDE.md on startup
-./tmux_claude.sh /path/to/project --detail  # Send tool results to QQ (QQ Bot only)
 ./tmux_claude.sh /path/to/project stop   # Stop session
 ```
 
-## QQ Bot Options
+## Config: tmux_claude.json
 
-| Option | Tool Use | Tool Result |
-|--------|----------|-------------|
-| (none) | ✓ | ✗ |
-| --all-yes | ✗ | ✗ |
-| --detail | ✓ | ✓ |
-| --all-yes --detail | ✓ | ✓ |
+Place in project directory:
+
+```json
+{
+  "auto_approve": false,
+  "load_md": false,
+  "detail": false,
+  "qq_bot": {
+    "appid": "...",
+    "secret": "...",
+    "test_c2c_openid": "..."
+  }
+}
+```
+
+- `auto_approve`: Auto-approve all permission requests
+- `load_md`: Read CLAUDE.md on startup
+- `detail`: Send tool results to QQ (QQ Bot only)
+- `qq_bot`: QQ Bot config (omit to disable)
+
+## QQ Bot Message Options
+
+| auto_approve | detail | Tool Use | Tool Result |
+|--------------|--------|----------|-------------|
+| false | false | ✓ | ✗ |
+| true | false | ✗ | ✗ |
+| false | true | ✓ | ✓ |
+| true | true | ✓ | ✓ |
 
 ## Files
 
@@ -53,5 +72,5 @@ Confirm before push to github when user says "deploy".
 
 ```bash
 scp tmux_claude.sh tmux_claude_log.py qq_bot.py hk2:~/tmux_claude/
-ssh hk2 'bash -i -c "tmux_claude war all_yes --daemon"'
+ssh hk2 'bash -i -c "tmux_claude war --daemon"'
 ```

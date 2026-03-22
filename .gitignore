@@ -10,6 +10,7 @@ __pycache__/
 # test 目录（运行时测试产生）
 test/
 qq_bot_config.json
+tmux_claude.json
 
 # 语音文件日期目录
 20[0-9][0-9][0-1][0-9][0-3][0-9]/

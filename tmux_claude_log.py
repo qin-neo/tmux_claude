@@ -396,31 +396,68 @@ def watch_loop(watcher, logger, session_name, stop_event, auto_approve, load_md=
             last_claudemd_read = check_claudemd_refresh(session_name, last_claudemd_read)
 
 
+def load_config(project_dir):
+    """加载配置文件"""
+    config_path = os.path.join(project_dir, "tmux_claude.json")
+    if os.path.exists(config_path):
+        with open(config_path, "r") as f:
+            return json.load(f)
+    return {}
+
+
 def main():
     parser = argparse.ArgumentParser(description="claude JSONL 文件监控 log 守护进程")
-    parser.add_argument("--project-dir", required=True, help="claude 项目的绝对路径")
-    parser.add_argument("--session", required=True, help="tmux session 名称")
-    parser.add_argument("--log-dir", required=True, help="log 文件存放目录")
-    parser.add_argument("--claude-dir", required=True, help="claude 数据目录 (~/.claude)")
-    parser.add_argument("--auto-approve", action="store_true", help="自动确认所有权限请求")
-    parser.add_argument("--load-md", action="store_true", help="启动时读取 CLAUDE.md")
+    parser.add_argument("project_dir", help="claude 项目的绝对路径")
+    parser.add_argument("--session", help="tmux session 名称 (默认: 目录名)")
+    parser.add_argument("--claude-dir", default="~/.claude", help="claude 数据目录")
     args = parser.parse_args()
 
-    project_dir = os.path.abspath(args.project_dir)
-    log_dir = os.path.abspath(args.log_dir)
+    project_dir = os.path.abspath(os.path.expanduser(args.project_dir))
+    claude_dir = os.path.abspath(os.path.expanduser(args.claude_dir))
+    session = args.session or os.path.basename(project_dir).replace(".", "_").replace(":", "_")
 
-    internal_dir = os.path.join(args.claude_dir, "projects", project_dir_to_internal(project_dir))
+    if not os.path.isdir(project_dir):
+        print(f"错误: 目录不存在: {project_dir}", file=sys.stderr)
+        sys.exit(1)
+
+    # 加载配置
+    config = load_config(project_dir)
+    auto_approve = config.get("auto_approve", False)
+    load_md = config.get("load_md", False)
+    detail = config.get("detail", False)
+    qq_config = config.get("qq_bot")
+
+    # 有 QQ Bot 配置则启动 QQ Bot
+    if qq_config:
+        try:
+            from qq_bot import run_qq_bot
+            run_qq_bot(
+                session=session,
+                project_dir=project_dir,
+                log_dir=project_dir,
+                claude_dir=claude_dir,
+                qq_config=qq_config,
+                auto_approve=auto_approve,
+                load_md=load_md,
+                detail=detail,
+            )
+        except ImportError as e:
+            print(f"错误: 无法加载 QQ Bot 模块: {e}", file=sys.stderr)
+            sys.exit(1)
+        return
+
+    # 无 QQ 配置：运行普通 log 守护进程
+    internal_dir = os.path.join(claude_dir, "projects", project_dir_to_internal(project_dir))
     if not os.path.isdir(internal_dir):
         print(f"错误: claude 数据目录不存在: {internal_dir}", file=sys.stderr)
         print("该项目可能尚未被 claude 打开过", file=sys.stderr)
         sys.exit(1)
 
-    log_file = os.path.join(log_dir, "tmux_claude.log")
-
+    log_file = os.path.join(project_dir, "tmux_claude.log")
     logger = setup_logging(log_file)
     watcher = ProjectWatcher(internal_dir, skip_existing=True)
 
-    mode_str = " (auto-approve)" if args.auto_approve else ""
+    mode_str = " (auto-approve)" if auto_approve else ""
     print(f"[INFO] claude_log 启动{mode_str}: project={project_dir}, log={log_file}", file=sys.stderr)
 
     stop_event = {"stop": False}
@@ -433,7 +470,7 @@ def main():
     signal.signal(signal.SIGINT, signal_handler)
 
     try:
-        watch_loop(watcher, logger, args.session, stop_event, args.auto_approve, args.load_md)
+        watch_loop(watcher, logger, session, stop_event, auto_approve, load_md)
     finally:
         watcher.close()
         print(f"[INFO] claude_log 已退出: project={project_dir}", file=sys.stderr)
