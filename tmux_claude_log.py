@@ -397,12 +397,22 @@ def watch_loop(watcher, logger, session_name, stop_event, auto_approve, load_md=
 
 
 def load_config(project_dir):
-    """加载配置文件"""
+    """加载配置文件，不存在则创建默认配置"""
     config_path = os.path.join(project_dir, "tmux_claude.json")
     if os.path.exists(config_path):
         with open(config_path, "r") as f:
             return json.load(f)
-    return {}
+
+    # 创建默认配置文件
+    default_config = {
+        "auto_approve": False,
+        "load_md": False,
+        "detail": False,
+    }
+    with open(config_path, "w") as f:
+        json.dump(default_config, f, indent=2)
+    print(f"[INFO] 已创建默认配置文件: {config_path}", file=sys.stderr)
+    return default_config
 
 
 def main():
@@ -430,6 +440,9 @@ def main():
     # 有 QQ Bot 配置则启动 QQ Bot
     if qq_config:
         try:
+            script_dir = os.path.dirname(os.path.abspath(__file__))
+            if script_dir not in sys.path:
+                sys.path.insert(0, script_dir)
             from qq_bot import run_qq_bot
             run_qq_bot(
                 session=session,
