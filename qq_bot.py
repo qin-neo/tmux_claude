@@ -747,14 +747,17 @@ def run_qq_bot(session, project_dir, log_dir, claude_dir, qq_config, auto_approv
     log_handler = setup_log_file(claude_log_file)
 
     internal_dir = os.path.join(claude_dir, "projects", project_dir_to_internal(project_dir))
-    if not os.path.isdir(internal_dir):
-        print(f"错误: claude 数据目录不存在: {internal_dir}", file=sys.stderr)
-        print("该项目可能尚未被 claude 打开过", file=sys.stderr)
-        sys.exit(1)
-
-    watcher = ProjectWatcher(internal_dir, skip_existing=True)
 
     print(f"[INFO] QQ Bot 启动: session={session}, log={log_file}", file=sys.stderr)
+
+    # 等待 claude 数据目录就绪
+    if not os.path.isdir(internal_dir):
+        print(f"[INFO] 等待 claude 数据目录: {internal_dir}", file=sys.stderr)
+        while not os.path.isdir(internal_dir):
+            time.sleep(1)
+        print(f"[INFO] claude 数据目录已就绪", file=sys.stderr)
+
+    watcher = ProjectWatcher(internal_dir, skip_existing=True)
 
     intents = botpy.Intents(
         public_messages=True,

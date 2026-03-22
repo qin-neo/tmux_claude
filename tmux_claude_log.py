@@ -462,17 +462,22 @@ def main():
 
     # 无 QQ 配置：运行普通 log 守护进程
     internal_dir = os.path.join(claude_dir, "projects", project_dir_to_internal(project_dir))
-    if not os.path.isdir(internal_dir):
-        print(f"错误: claude 数据目录不存在: {internal_dir}", file=sys.stderr)
-        print("该项目可能尚未被 claude 打开过", file=sys.stderr)
-        sys.exit(1)
 
+    # 先创建日志文件
     log_file = os.path.join(project_dir, "tmux_claude.log")
     logger = setup_logging(log_file)
-    watcher = ProjectWatcher(internal_dir, skip_existing=True)
 
     mode_str = " (auto-approve)" if auto_approve else ""
     print(f"[INFO] claude_log 启动{mode_str}: project={project_dir}, log={log_file}", file=sys.stderr)
+
+    # 等待 claude 数据目录就绪
+    if not os.path.isdir(internal_dir):
+        print(f"[INFO] 等待 claude 数据目录: {internal_dir}", file=sys.stderr)
+        while not os.path.isdir(internal_dir):
+            time.sleep(1)
+        print(f"[INFO] claude 数据目录已就绪", file=sys.stderr)
+
+    watcher = ProjectWatcher(internal_dir, skip_existing=True)
 
     stop_event = {"stop": False}
 
