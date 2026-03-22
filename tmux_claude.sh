@@ -25,7 +25,6 @@ export LC_ALL="C.UTF-8"
 
 SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
 LOG_SCRIPT="$SCRIPT_DIR/tmux_claude_log.py"
-CLAUDE_DIR="$HOME/.claude"
 
 if ! command -v tmux &>/dev/null; then
     echo "错误: 未安装 tmux，请先安装: apt install tmux / yum install tmux"
@@ -141,6 +140,10 @@ if ! command -v "$CLAUDE_BIN" &>/dev/null; then
     echo "请安装 Claude CLI 或使用 --claude 指定命令"
     exit 1
 fi
+
+# 根据 claude 命令名推断数据目录
+CLAUDE_NAME="${CLAUDE_BIN##*/}"
+CLAUDE_DIR="$HOME/.$CLAUDE_NAME"
 
 DIR_ABS="$(cd "$DIR_ARG" 2>/dev/null && pwd)"
 if [[ -z "$DIR_ABS" || ! -d "$DIR_ABS" ]]; then
