@@ -138,6 +138,7 @@ done
 CLAUDE_BIN="${CLAUDE_CMD%% *}"
 if ! command -v "$CLAUDE_BIN" &>/dev/null; then
     echo "错误: 未找到命令 '$CLAUDE_BIN'"
+    echo "请安装 Claude CLI 或使用 --claude 指定命令"
     exit 1
 fi
 
