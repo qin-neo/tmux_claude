@@ -25,6 +25,7 @@ export LC_ALL="C.UTF-8"
 
 SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
 LOG_SCRIPT="$SCRIPT_DIR/tmux_claude_log.py"
+CLAUDE_DIR="$HOME/.claude"
 
 if ! command -v tmux &>/dev/null; then
     echo "错误: 未安装 tmux，请先安装: apt install tmux / yum install tmux"
@@ -179,7 +180,7 @@ do_start() {
     fi
 
     # 构建 log 脚本参数
-    LOG_ARGS="'$DIR_ABS' --session '$SESSION_NAME'"
+    LOG_ARGS="'$DIR_ABS' --session '$SESSION_NAME' --claude-dir '$CLAUDE_DIR'"
     if [[ "$ALL_YES" == "true" ]]; then
         LOG_ARGS="$LOG_ARGS --all-yes"
     fi
