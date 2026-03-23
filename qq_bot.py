@@ -24,7 +24,7 @@ from logging.handlers import RotatingFileHandler
 from urllib.request import urlopen
 
 # 复用 tmux_claude_log.py 的核心组件
-from tmux_claude_log import ProjectWatcher, extract_message, project_dir_to_internal, send_approve, send_to_tmux, check_claudemd_refresh, check_tmux_session
+from tmux_claude_log import ProjectWatcher, extract_message, project_dir_to_internal, send_approve, send_to_tmux, send_claudemd_prompt, check_tmux_session
 
 try:
     import botpy
@@ -207,7 +207,7 @@ class ClaudeBot(botpy.Client):
         self._external_logger.info(f"Claude Bot 已就绪，session: {self.session}")
         await self._send_online_notification()
         if self._load_md:
-            send_to_tmux(self.session, "read CLAUDE.md, auto create 定时任务")
+            send_claudemd_prompt(self.session)
         asyncio.create_task(self._listen_forever())
 
     async def _listen_forever(self):

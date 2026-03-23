@@ -341,13 +341,19 @@ def send_approve(session_name):
 
 
 CLAUDEMD_INTERVAL = 24 * 3600  # 24小时
+CLAUDEMD_PROMPT = "读 CLAUDE.md,遵守指示"
+
+
+def send_claudemd_prompt(session_name):
+    """发送 CLAUDE.md 读取指示"""
+    send_to_tmux(session_name, CLAUDEMD_PROMPT)
 
 
 def check_claudemd_refresh(session_name, last_check, interval=CLAUDEMD_INTERVAL):
     """检查是否需要刷新 CLAUDE.md，返回新的 last_check"""
     now = time.monotonic()
     if now - last_check >= interval:
-        send_to_tmux(session_name, "读 CLAUDE.md,遵守指示")
+        send_claudemd_prompt(session_name)
         return now
     return last_check
 
