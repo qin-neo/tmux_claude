@@ -1,6 +1,6 @@
 # tmux_claude
 
-基于 tmux 的 Claude CLI 会话管理器，支持后台运行与自动日志记录。
+基于 tmux 的 Claude CLI 会话管理器，支持后台运行、自动日志记录和 QQ Bot 远程控制。
 
 ## 功能特性
 
