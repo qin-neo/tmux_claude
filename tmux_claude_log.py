@@ -73,9 +73,26 @@ class Inotify:
         os.close(self.fd)
 
 
-def project_dir_to_internal(project_dir):
-    """/root/chcgw_probe → -root-chcgw-probe"""
-    return project_dir.replace("/", "-").replace("_", "-")
+def project_dir_to_internal(project_dir, claude_dir=None):
+    """转换项目目录到内部目录名，兼容两种风格。
+    - /opt/uas → -opt-uas (旧风格，前导 -)
+    - /opt/uas → opt-uas (新风格，无前导 -)
+    返回存在的目录名，都不存在则返回新风格。
+    """
+    name = project_dir.lstrip("/").replace("/", "-").replace("_", "-")
+    old_style = "-" + name
+    new_style = name
+
+    if claude_dir:
+        projects_dir = os.path.join(claude_dir, "projects")
+        old_path = os.path.join(projects_dir, old_style)
+        new_path = os.path.join(projects_dir, new_style)
+        if os.path.isdir(old_path):
+            return old_style
+        if os.path.isdir(new_path):
+            return new_style
+
+    return new_style
 
 
 def _clean_text(text):
@@ -467,7 +484,7 @@ def main():
         return
 
     # 无 QQ 配置：运行普通 log 守护进程
-    internal_dir = os.path.join(claude_dir, "projects", project_dir_to_internal(project_dir))
+    internal_dir = os.path.join(claude_dir, "projects", project_dir_to_internal(project_dir, claude_dir))
 
     # 先创建日志文件
     log_file = os.path.join(project_dir, "tmux_claude.log")

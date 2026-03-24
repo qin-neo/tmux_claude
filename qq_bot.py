@@ -746,7 +746,7 @@ def run_qq_bot(session, project_dir, log_dir, claude_dir, qq_config, auto_approv
     claude_log_file = os.path.join(log_dir, "tmux_claude.log")
     log_handler = setup_log_file(claude_log_file)
 
-    internal_dir = os.path.join(claude_dir, "projects", project_dir_to_internal(project_dir))
+    internal_dir = os.path.join(claude_dir, "projects", project_dir_to_internal(project_dir, claude_dir))
 
     print(f"[INFO] QQ Bot 启动: session={session}, log={log_file}", file=sys.stderr)
 
