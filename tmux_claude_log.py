@@ -456,7 +456,13 @@ def main():
 
     # 加载配置
     config = load_config(project_dir)
-    auto_approve = args.all_yes or config.get("auto_approve", False)
+    # --all-yes 时更新配置文件
+    if args.all_yes and not config.get("auto_approve", False):
+        config["auto_approve"] = True
+        config_path = os.path.join(project_dir, "tmux_claude.json")
+        with open(config_path, "w") as f:
+            json.dump(config, f, indent=2)
+    auto_approve = config.get("auto_approve", False)
     load_md = config.get("load_md", False)
     detail = config.get("detail", False)
     qq_config = config.get("qq_bot")
