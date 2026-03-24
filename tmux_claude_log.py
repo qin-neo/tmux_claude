@@ -256,13 +256,13 @@ def extract_message_generic(obj, state):
 
 def project_dir_to_internal(project_dir, claude_dir=None):
     """转换项目目录到内部目录名，兼容两种风格。
-    - /opt/uas → -opt-uas (旧风格，前导 -) → extract_message
-    - /opt/uas → opt-uas (新风格，无前导 -) → extract_message_generic
+    - /opt/uas → -opt-uas (旧风格，前导 -, 下划线转连字符) → extract_message
+    - /root/host_net_migrate → root-host_net_migrate (新风格，保留下划线) → extract_message_generic
     返回 (dir_name, extract_fn)。
     """
-    name = project_dir.lstrip("/").replace("/", "-").replace("_", "-")
-    old_style = "-" + name
-    new_style = name
+    base = project_dir.lstrip("/").replace("/", "-")
+    old_style = "-" + base.replace("_", "-")  # Claude CLI: 下划线转连字符
+    new_style = base                           # generic: 保留下划线
 
     if claude_dir:
         projects_dir = os.path.join(claude_dir, "projects")
