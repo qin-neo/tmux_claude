@@ -73,27 +73,7 @@ class Inotify:
         os.close(self.fd)
 
 
-def project_dir_to_internal(project_dir, claude_dir=None):
-    """转换项目目录到内部目录名，兼容两种风格。
-    - /opt/uas → -opt-uas (旧风格，前导 -)
-    - /opt/uas → opt-uas (新风格，无前导 -)
-    返回存在的目录名，都不存在则返回新风格。
-    """
-    name = project_dir.lstrip("/").replace("/", "-").replace("_", "-")
-    old_style = "-" + name
-    new_style = name
-
-    if claude_dir:
-        projects_dir = os.path.join(claude_dir, "projects")
-        old_path = os.path.join(projects_dir, old_style)
-        new_path = os.path.join(projects_dir, new_style)
-        if os.path.isdir(old_path):
-            return old_style
-        if os.path.isdir(new_path):
-            return new_style
-
-    return new_style
-
+# ── 消息解析 ──
 
 def _clean_text(text):
     """清理 ANSI 转义，保留换行结构"""
@@ -101,10 +81,41 @@ def _clean_text(text):
     return text.strip()
 
 
+def _truncate(s, maxlen=120):
+    return s[:maxlen] + ("..." if len(s) > maxlen else "")
+
+
+def _format_tool_use(name, inp):
+    if name in ("Read", "ReadFile", "Write", "WriteFile", "Edit", "Replace"):
+        return inp.get("file_path", inp.get("path", ""))
+    if name in ("Grep", "Search"):
+        pattern = inp.get("pattern", "")
+        path = inp.get("path", "")
+        return f"pattern={pattern}" + (f" path={path}" if path else "")
+    if name == "Bash":
+        return _truncate(inp.get("command", ""))
+    if name in ("ListDir", "LS"):
+        return inp.get("path", inp.get("dir_path", ""))
+    if name == "AskUserQuestion":
+        questions = inp.get("questions", [])
+        parts = []
+        for q in questions:
+            question_text = q.get("question", "")
+            options = q.get("options", [])
+            if question_text:
+                parts.append(question_text)
+            for i, opt in enumerate(options, 1):
+                label = opt.get("label", "")
+                desc = opt.get("description", "")
+                parts.append(f"  {i}. {label}" + (f" - {desc}" if desc else ""))
+        return "\n".join(parts) if parts else ""
+    return _truncate(json.dumps(inp, ensure_ascii=False))
+
+
 def extract_message(obj, state):
-    """从 JSONL 对象中提取可读的日志行。
-    state 用于跟踪 permissionMode 等跨消息状态。
-    返回 (lines, needs_approve)：lines 是日志行列表，needs_approve 表示是否需要自动确认。
+    """从 Claude CLI 格式 JSONL 对象中提取日志行。
+    type=user/assistant/system，tool_use 嵌在 assistant content 中。
+    返回 (lines, needs_approve)。
     """
     tp = obj.get("type")
     needs_approve = False
@@ -112,7 +123,6 @@ def extract_message(obj, state):
     if tp == "user":
         if obj.get("isMeta"):
             return [], False
-        # 跟踪 permissionMode 变化
         perm = obj.get("permissionMode")
         if perm and perm != state.get("permissionMode"):
             state["permissionMode"] = perm
@@ -161,7 +171,6 @@ def extract_message(obj, state):
         msg = obj.get("message", {})
         lines = []
         has_tool_use = False
-        # 默认需要批准（permissionMode 未设置时视为 default）
         waiting = state.get("permissionMode", "default") == "default"
         for block in msg.get("content", []):
             if block.get("type") == "text":
@@ -184,37 +193,88 @@ def extract_message(obj, state):
     return [], False
 
 
-def _truncate(s, maxlen=120):
-    return s[:maxlen] + ("..." if len(s) > maxlen else "")
+def extract_message_generic(obj, state):
+    """从 generic 格式 JSONL 对象中提取日志行。
+    type=message(+role), function_call, function_call_result 等。
+    返回 (lines, needs_approve)。
+    """
+    tp = obj.get("type")
+
+    if tp == "message":
+        role = obj.get("role")
+        content = obj.get("content", [])
+        if isinstance(content, str):
+            text = _clean_text(content)
+            if not text:
+                return [], False
+            tag = "USER" if role == "user" else "ASSISTANT"
+            return [f"[{tag}] {text}"], False
+        if isinstance(content, list):
+            lines = []
+            for block in content:
+                if not isinstance(block, dict):
+                    continue
+                bt = block.get("type", "")
+                text = _clean_text(block.get("text", ""))
+                if not text:
+                    continue
+                if bt in ("input_text", "text") and role == "user":
+                    lines.append(f"[USER] {text}")
+                elif bt in ("output_text", "text") and role == "assistant":
+                    lines.append(f"[ASSISTANT] {text}")
+            return lines, False
+        return [], False
+
+    if tp == "function_call":
+        name = obj.get("name", "unknown")
+        args = obj.get("arguments", "")
+        if isinstance(args, str):
+            try:
+                inp = json.loads(args)
+            except (json.JSONDecodeError, TypeError):
+                inp = {}
+        else:
+            inp = args if isinstance(args, dict) else {}
+        summary = _format_tool_use(name, inp)
+        return [f"[TOOL USE] {name}: {summary} (waiting for approval)"], True
+
+    if tp == "function_call_result":
+        output = obj.get("output", "")
+        if isinstance(output, dict):
+            text = _clean_text(output.get("text", ""))
+        elif isinstance(output, str):
+            text = _clean_text(output)
+        else:
+            text = ""
+        tag = "TOOL ERROR" if obj.get("status") == "error" else "TOOL RESULT"
+        if text:
+            return [f"[{tag}]\n{text}"], False
+        return [f"[{tag}] (empty)"], False
+
+    return [], False
 
 
-def _format_tool_use(name, inp):
-    if name in ("Read", "ReadFile", "Write", "WriteFile", "Edit", "Replace"):
-        return inp.get("file_path", inp.get("path", ""))
-    if name in ("Grep", "Search"):
-        pattern = inp.get("pattern", "")
-        path = inp.get("path", "")
-        return f"pattern={pattern}" + (f" path={path}" if path else "")
-    if name == "Bash":
-        return _truncate(inp.get("command", ""))
-    if name in ("ListDir", "LS"):
-        return inp.get("path", inp.get("dir_path", ""))
-    if name == "AskUserQuestion":
-        # 格式化选项列表
-        questions = inp.get("questions", [])
-        parts = []
-        for q in questions:
-            question_text = q.get("question", "")
-            options = q.get("options", [])
-            if question_text:
-                parts.append(question_text)
-            for i, opt in enumerate(options, 1):
-                label = opt.get("label", "")
-                desc = opt.get("description", "")
-                parts.append(f"  {i}. {label}" + (f" - {desc}" if desc else ""))
-        return "\n".join(parts) if parts else ""
-    return _truncate(json.dumps(inp, ensure_ascii=False))
+def project_dir_to_internal(project_dir, claude_dir=None):
+    """转换项目目录到内部目录名，兼容两种风格。
+    - /opt/uas → -opt-uas (旧风格，前导 -) → extract_message
+    - /opt/uas → opt-uas (新风格，无前导 -) → extract_message_generic
+    返回 (dir_name, extract_fn)。
+    """
+    name = project_dir.lstrip("/").replace("/", "-").replace("_", "-")
+    old_style = "-" + name
+    new_style = name
 
+    if claude_dir:
+        projects_dir = os.path.join(claude_dir, "projects")
+        if os.path.isdir(os.path.join(projects_dir, old_style)):
+            return old_style, extract_message
+        if os.path.isdir(os.path.join(projects_dir, new_style)):
+            return new_style, extract_message_generic
+
+    return new_style, extract_message_generic
+
+
+# ── inotify 监控 ──
 
 class JsonlTracker:
     """追踪单个 JSONL 文件的增量读取位置"""
@@ -263,10 +323,10 @@ class ProjectWatcher:
         # watch 根目录（捕获新 jsonl 文件和新子目录）
         self._watch_dir(internal_dir)
 
-        # watch 已有子目录
-        for entry in os.scandir(internal_dir):
-            if entry.is_dir():
-                self._watch_dir(entry.path)
+        # 递归 watch 所有已有子目录
+        for root, dirs, _files in os.walk(internal_dir):
+            for d in dirs:
+                self._watch_dir(os.path.join(root, d))
 
         # 初始化已有文件的 tracker
         for entry in self._iter_jsonl_files():
@@ -319,6 +379,8 @@ class ProjectWatcher:
     def close(self):
         self._inotify.close()
 
+
+# ── 工具函数 ──
 
 def setup_logging(log_file):
     """RotatingFileHandler，单文件 10MB，最多 100 个备份"""
@@ -375,7 +437,13 @@ def check_claudemd_refresh(session_name, last_check, interval=CLAUDEMD_INTERVAL)
     return last_check
 
 
-def watch_loop(watcher, logger, session_name, stop_event, auto_approve, load_md=False):
+# ── 主循环 ──
+
+def watch_loop(watcher, logger, session_name, stop_event, auto_approve,
+               extract_fn=extract_message, load_md=False, on_line=None):
+    """主监听循环。
+    on_line(line): 可选回调，每条日志行调用一次（供 QQ bot 等外部消费）。
+    """
     last_session_check = time.monotonic()
     last_claudemd_read = time.monotonic()
     state = {}
@@ -386,9 +454,11 @@ def watch_loop(watcher, logger, session_name, stop_event, auto_approve, load_md=
         got_result = False
 
         for obj in watcher.poll(timeout=poll_timeout):
-            lines, needs_approve = extract_message(obj, state)
+            lines, needs_approve = extract_fn(obj, state)
             for line in lines:
                 logger.info(line)
+                if on_line:
+                    on_line(line)
                 if line.startswith("[TOOL RESULT]") or line.startswith("[TOOL ERROR]"):
                     got_result = True
             if needs_approve and auto_approve:
@@ -467,6 +537,9 @@ def main():
     detail = config.get("detail", False)
     qq_config = config.get("qq_bot")
 
+    internal_name, extract_fn = project_dir_to_internal(project_dir, claude_dir)
+    internal_dir = os.path.join(claude_dir, "projects", internal_name)
+
     # 有 QQ Bot 配置则启动 QQ Bot
     if qq_config:
         try:
@@ -478,11 +551,12 @@ def main():
                 session=session,
                 project_dir=project_dir,
                 log_dir=project_dir,
-                claude_dir=claude_dir,
+                internal_dir=internal_dir,
                 qq_config=qq_config,
                 auto_approve=auto_approve,
                 load_md=load_md,
                 detail=detail,
+                extract_fn=extract_fn,
             )
         except ImportError as e:
             print(f"错误: 无法加载 QQ Bot 模块: {e}", file=sys.stderr)
@@ -490,14 +564,12 @@ def main():
         return
 
     # 无 QQ 配置：运行普通 log 守护进程
-    internal_dir = os.path.join(claude_dir, "projects", project_dir_to_internal(project_dir, claude_dir))
-
-    # 先创建日志文件
     log_file = os.path.join(project_dir, "tmux_claude.log")
     logger = setup_logging(log_file)
 
     mode_str = " (auto-approve)" if auto_approve else ""
-    print(f"[INFO] claude_log 启动{mode_str}: project={project_dir}, log={log_file}", file=sys.stderr)
+    fn_name = extract_fn.__name__
+    print(f"[INFO] claude_log 启动{mode_str} [{fn_name}]: project={project_dir}, log={log_file}", file=sys.stderr)
 
     # 等待 claude 数据目录就绪
     if not os.path.isdir(internal_dir):
@@ -518,7 +590,7 @@ def main():
     signal.signal(signal.SIGINT, signal_handler)
 
     try:
-        watch_loop(watcher, logger, session, stop_event, auto_approve, load_md)
+        watch_loop(watcher, logger, session, stop_event, auto_approve, extract_fn, load_md)
     finally:
         watcher.close()
         print(f"[INFO] claude_log 已退出: project={project_dir}", file=sys.stderr)

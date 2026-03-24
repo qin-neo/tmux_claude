@@ -4,9 +4,9 @@ QQ Bot for tmux_claude - QQ 远程控制 Claude CLI
 
 通过 QQ 消息与 Claude 交互：
 - 接收 QQ 消息 → 发送到 tmux session
-- 监听 JSONL 文件 → 写 log + 发送 Claude 回复到 QQ
+- 从 watch_loop 回调接收日志行 → 转发到 QQ
 
-复用 tmux_claude_log.py 的监听逻辑，无需单独启动 log 守护进程。
+JSONL 解析、auto-approve、session 检查等逻辑全部在 tmux_claude_log.py 的 watch_loop 中。
 """
 
 import sys
@@ -16,6 +16,7 @@ import time
 import re
 import base64
 import asyncio
+import threading
 import subprocess
 import logging
 import shutil
@@ -23,8 +24,11 @@ from datetime import datetime
 from logging.handlers import RotatingFileHandler
 from urllib.request import urlopen
 
-# 复用 tmux_claude_log.py 的核心组件
-from tmux_claude_log import ProjectWatcher, extract_message, project_dir_to_internal, send_approve, send_to_tmux, send_claudemd_prompt, check_tmux_session
+from tmux_claude_log import (
+    ProjectWatcher, watch_loop, setup_logging as setup_claude_logging,
+    project_dir_to_internal, send_approve, send_to_tmux,
+    check_tmux_session, extract_message,
+)
 
 try:
     import botpy
@@ -35,9 +39,6 @@ except ImportError:
 
 # 最大回复长度（QQ 消息限制）
 MAX_MESSAGE_LENGTH = 2000
-
-# tmux session 检查间隔
-SESSION_CHECK_INTERVAL = 2.0
 
 # 媒体标签正则
 MEDIA_TAG_RE = re.compile(r'<(qqimg|qqvoice|qqvideo|qqfile)>([^<>]+)</(?:qqimg|qqvoice|qqvideo|qqfile|img)>', re.IGNORECASE)
@@ -169,29 +170,15 @@ def filter_internal_markers(text):
     return result
 
 
-def setup_log_file(log_file):
-    """设置 log 文件 handler"""
-    os.makedirs(os.path.dirname(log_file), exist_ok=True)
-    handler = RotatingFileHandler(
-        log_file, maxBytes=10 * 1024 * 1024, backupCount=100, encoding="utf-8"
-    )
-    handler.setLevel(logging.INFO)
-    handler.setFormatter(logging.Formatter(fmt="%(asctime)s %(levelname)s %(message)s"))
-    return handler
-
-
 class ClaudeBot(botpy.Client):
-    """QQ Bot 客户端"""
+    """QQ Bot 客户端，只负责消息传递"""
 
-    def __init__(self, session, watcher, log_handler, logger, project_dir=None, auto_approve=False, load_md=False, detail=False, **kwargs):
+    def __init__(self, session, queue, logger, project_dir=None, auto_approve=False, detail=False, **kwargs):
         super().__init__(**kwargs)
         self.session = session
-        self.watcher = watcher
-        self.log_handler = log_handler
-        self._check_interval = 0.5
+        self._queue = queue
         self._external_logger = logger
         self._auto_approve = auto_approve
-        self._load_md = load_md
         self._detail = detail
         self._test_c2c_openid = None
         self._config_path = None
@@ -206,78 +193,41 @@ class ClaudeBot(botpy.Client):
         """Bot 就绪"""
         self._external_logger.info(f"Claude Bot 已就绪，session: {self.session}")
         await self._send_online_notification()
-        if self._load_md:
-            send_claudemd_prompt(self.session)
         asyncio.create_task(self._listen_forever())
 
     async def _listen_forever(self):
-        """常驻监听协程：监听 JSONL → 写 log → 发送给用户"""
-        self._external_logger.info("启动常驻监听协程")
-        state = {}
-        last_session_check = time.monotonic()
-        last_claudemd_read = time.monotonic()
+        """消费 watch_loop 回调的日志行，转发到 QQ"""
+        self._external_logger.info("启动消息转发协程")
 
         while True:
             try:
-                # 跟踪本次 poll 是否有待响应的权限请求
-                pending_approval = False
-                for obj in self.watcher.poll(timeout=self._check_interval):
-                    lines, needs_approve = extract_message(obj, state)
-                    for line in lines:
-                        self.log_handler.emit(logging.LogRecord(
-                            name="claude_log", level=logging.INFO,
-                            pathname="", lineno=0, msg=line,
-                            args=(), exc_info=None
-                        ))
-                        if line.startswith("[ASSISTANT]"):
-                            text = line[len("[ASSISTANT]"):].strip()
-                            if text:
-                                await self._send_to_user(text)
-                        elif line.startswith("[USER]"):
-                            text = line[len("[USER]"):].strip()
-                            if text:
-                                # 检测 /exit 命令，主动退出
-                                if text == "/exit":
-                                    self._external_logger.info("收到 /exit 命令，退出")
-                                    return
-                                await self._send_to_user(f"[用户] {text}")
-                        elif line.startswith("[TOOL USE]"):
-                            # --detail 或 非 --all-yes 时发送
-                            if self._detail or not self._auto_approve:
-                                await self._send_to_user(f"[工具调用] {line[len('[TOOL USE]'):].strip()}")
-                        elif line.startswith("[TOOL RESULT]"):
-                            # 收到 tool_result，说明权限已被响应
-                            pending_approval = False
-                            if self._detail:
-                                await self._send_to_user(f"[工具结果] {line[len('[TOOL RESULT]'):].strip()[:200]}...")
-                        elif line.startswith("[TOOL ERROR]"):
-                            pending_approval = False
-                            if self._detail:
-                                await self._send_to_user(f"[工具错误] {line[len('[TOOL ERROR]'):].strip()[:200]}...")
+                line = await self._queue.get()
 
-                    if needs_approve:
-                        pending_approval = True
-
-                # 只在 poll 结束后仍有待响应的权限请求时通知
-                if pending_approval:
-                    if self._auto_approve:
-                        send_approve(self.session)
-                        self._external_logger.info("[tmux_claude auto approve]")
-                    else:
+                if line.startswith("[ASSISTANT]"):
+                    text = line[len("[ASSISTANT]"):].strip()
+                    if text:
+                        await self._send_to_user(text)
+                elif line.startswith("[USER]"):
+                    text = line[len("[USER]"):].strip()
+                    if text:
+                        if text == "/exit":
+                            self._external_logger.info("收到 /exit 命令，退出")
+                            return
+                        await self._send_to_user(f"[用户] {text}")
+                elif line.startswith("[TOOL USE]"):
+                    if self._detail or not self._auto_approve:
+                        await self._send_to_user(f"[工具调用] {line[len('[TOOL USE]'):].strip()}")
+                    # 非 auto-approve 时，带 (waiting for approval) 的行提示用户
+                    if not self._auto_approve and "(waiting for approval)" in line:
                         await self._send_to_user("[权限请求] 1=同意，其他到界面查看")
-
-                now = time.monotonic()
-                if now - last_session_check >= SESSION_CHECK_INTERVAL:
-                    last_session_check = now
-                    if not check_tmux_session(self.session):
-                        self._external_logger.info(f"tmux session '{self.session}' 已结束，退出")
-                        break
-
-                last_claudemd_read = check_claudemd_refresh(self.session, last_claudemd_read)
-
-                await asyncio.sleep(self._check_interval)
+                elif line.startswith("[TOOL RESULT]"):
+                    if self._detail:
+                        await self._send_to_user(f"[工具结果] {line[len('[TOOL RESULT]'):].strip()[:200]}...")
+                elif line.startswith("[TOOL ERROR]"):
+                    if self._detail:
+                        await self._send_to_user(f"[工具错误] {line[len('[TOOL ERROR]'):].strip()[:200]}...")
             except Exception as e:
-                self._external_logger.error(f"监听协程错误: {e}")
+                self._external_logger.error(f"消息转发错误: {e}")
                 await asyncio.sleep(1)
 
     async def _send_to_user(self, text):
@@ -285,16 +235,12 @@ class ClaudeBot(botpy.Client):
         if not self._test_c2c_openid:
             return
 
-        # 过滤内部标记
         text = filter_internal_markers(text)
-
-        # 解析媒体标签，构建发送队列
         send_queue = self._parse_media_tags(text)
 
         for item in send_queue:
             try:
                 if item['type'] == 'text':
-                    # 发送纯文本
                     for chunk in self._split_message(item['content']):
                         await self.api.post_c2c_message(
                             openid=self._test_c2c_openid,
@@ -303,23 +249,18 @@ class ClaudeBot(botpy.Client):
                         self._external_logger.info(f"已发送C2C消息 ({len(chunk)} 字符)")
                         await asyncio.sleep(0.5)
                 elif item['type'] == 'image':
-                    # 发送图片
                     await self._send_image(item['content'])
                 elif item['type'] == 'file':
-                    # 发送文件
                     await self._send_file(item['content'])
                 elif item['type'] == 'voice':
-                    # 发送语音
                     await self._send_voice(item['content'])
                 elif item['type'] == 'video':
-                    # 发送视频
                     await self._send_video(item['content'])
             except Exception as e:
                 self._external_logger.error(f"发送消息失败: {e}")
 
     async def _send_image(self, path_or_url):
         """发送图片"""
-        # 公网 URL，直接使用 API
         if path_or_url.startswith(('http://', 'https://')):
             try:
                 media = await self.api.post_c2c_file(
@@ -339,7 +280,6 @@ class ClaudeBot(botpy.Client):
                 )
                 return
 
-        # 本地文件，读取并上传 Base64
         if not os.path.exists(path_or_url):
             await self.api.post_c2c_message(
                 openid=self._test_c2c_openid,
@@ -348,14 +288,12 @@ class ClaudeBot(botpy.Client):
             return
 
         try:
-            # 读取文件并转为 Base64
             with open(path_or_url, 'rb') as f:
                 file_data = base64.b64encode(f.read()).decode('utf-8')
 
-            # 直接调用 HTTP API 上传
             route = Route('POST', '/v2/users/{openid}/files', openid=self._test_c2c_openid)
             payload = {
-                'file_type': 1,  # 图片
+                'file_type': 1,
                 'file_data': file_data,
                 'srv_send_msg': True
             }
@@ -371,7 +309,6 @@ class ClaudeBot(botpy.Client):
 
     async def _send_file(self, path_or_url):
         """发送文件"""
-        # 公网 URL
         if path_or_url.startswith(('http://', 'https://')):
             try:
                 media = await self.api.post_c2c_file(
@@ -391,7 +328,6 @@ class ClaudeBot(botpy.Client):
                 )
                 return
 
-        # 本地文件
         if not os.path.exists(path_or_url):
             await self.api.post_c2c_message(
                 openid=self._test_c2c_openid,
@@ -406,7 +342,7 @@ class ClaudeBot(botpy.Client):
             filename = os.path.basename(path_or_url)
             route = Route('POST', '/v2/users/{openid}/files', openid=self._test_c2c_openid)
             payload = {
-                'file_type': 4,  # 文件
+                'file_type': 4,
                 'file_data': file_data,
                 'srv_send_msg': False,
                 'filename': filename
@@ -465,7 +401,7 @@ class ClaudeBot(botpy.Client):
 
             route = Route('POST', '/v2/users/{openid}/files', openid=self._test_c2c_openid)
             payload = {
-                'file_type': 3,  # 语音
+                'file_type': 3,
                 'file_data': file_data,
                 'srv_send_msg': True
             }
@@ -513,7 +449,7 @@ class ClaudeBot(botpy.Client):
 
             route = Route('POST', '/v2/users/{openid}/files', openid=self._test_c2c_openid)
             payload = {
-                'file_type': 2,  # 视频
+                'file_type': 2,
                 'file_data': file_data,
                 'srv_send_msg': True
             }
@@ -533,12 +469,10 @@ class ClaudeBot(botpy.Client):
         last_end = 0
 
         for match in MEDIA_TAG_RE.finditer(text):
-            # 添加标签前的文本
             before = text[last_end:match.start()].strip()
             if before:
                 queue.append({'type': 'text', 'content': before})
 
-            # 添加媒体项
             tag_type = match.group(1).lower()
             content = match.group(2).strip()
             if tag_type == 'qqimg':
@@ -552,12 +486,10 @@ class ClaudeBot(botpy.Client):
 
             last_end = match.end()
 
-        # 添加最后一个标签后的文本
         after = text[last_end:].strip()
         if after:
             queue.append({'type': 'text', 'content': after})
 
-        # 如果没有媒体标签，返回整个文本
         if not queue:
             queue.append({'type': 'text', 'content': text})
 
@@ -600,9 +532,6 @@ class ClaudeBot(botpy.Client):
         content = message.content.strip()
 
         # 用户发送纯数字，发送方向键+Enter 确认权限选择
-        # 1 = 直接 Enter（默认第一项）
-        # 2 = Down + Enter
-        # 3 = Down + Down + Enter
         if content.isdigit():
             n = int(content)
             self._external_logger.info(f"权限选择: {content}")
@@ -636,7 +565,6 @@ class ClaudeBot(botpy.Client):
                         attachments_info += f"\n[图片: {filename}]\n图片URL: {url}\n"
                         self._external_logger.info(f"收到图片附件: {filename}")
                     elif content_type == 'voice' or content_type.startswith('audio/'):
-                        # 自动处理语音：下载 → 转码 → 转文字
                         text, local_path, status = process_voice_attachment(
                             url, filename, self._project_dir, self._external_logger
                         )
@@ -655,7 +583,6 @@ class ClaudeBot(botpy.Client):
             except Exception as e:
                 self._external_logger.error(f"解析附件失败: {e}")
 
-        # 合并文本和附件信息
         full_content = content + attachments_info
         if full_content.strip():
             self._external_logger.info(f"发送到 tmux [{self.session}]: {full_content[:100]}...")
@@ -723,7 +650,8 @@ def setup_logging(log_file=None):
     return logger
 
 
-def run_qq_bot(session, project_dir, log_dir, claude_dir, qq_config, auto_approve=False, load_md=False, detail=False):
+def run_qq_bot(session, project_dir, log_dir, internal_dir, qq_config,
+               auto_approve=False, load_md=False, detail=False, extract_fn=extract_message):
     """启动 QQ Bot，供 tmux_claude_log.py 调用"""
     project_dir = os.path.abspath(project_dir)
     log_dir = os.path.abspath(log_dir)
@@ -743,10 +671,9 @@ def run_qq_bot(session, project_dir, log_dir, claude_dir, qq_config, auto_approv
     log_file = os.path.join(log_dir, "qq_bot.log")
     logger = setup_logging(log_file)
 
+    # claude_log 写入 tmux_claude.log
     claude_log_file = os.path.join(log_dir, "tmux_claude.log")
-    log_handler = setup_log_file(claude_log_file)
-
-    internal_dir = os.path.join(claude_dir, "projects", project_dir_to_internal(project_dir, claude_dir))
+    claude_logger = setup_claude_logging(claude_log_file)
 
     print(f"[INFO] QQ Bot 启动: session={session}, log={log_file}", file=sys.stderr)
 
@@ -758,6 +685,8 @@ def run_qq_bot(session, project_dir, log_dir, claude_dir, qq_config, auto_approv
         print(f"[INFO] claude 数据目录已就绪", file=sys.stderr)
 
     watcher = ProjectWatcher(internal_dir, skip_existing=True)
+    stop_event = {"stop": False}
+    queue = asyncio.Queue()
 
     intents = botpy.Intents(
         public_messages=True,
@@ -766,19 +695,31 @@ def run_qq_bot(session, project_dir, log_dir, claude_dir, qq_config, auto_approv
 
     client = ClaudeBot(
         session=session,
-        watcher=watcher,
-        log_handler=log_handler,
+        queue=queue,
         logger=logger,
         project_dir=project_dir,
         auto_approve=auto_approve,
-        load_md=load_md,
         detail=detail,
         intents=intents,
     )
 
     client.set_test_target(c2c_openid=test_c2c_openid)
 
+    # watch_loop 在独立线程中运行，通过 on_line 回调往 queue 放数据
+    def on_line(line):
+        loop = client.loop
+        if loop and loop.is_running():
+            loop.call_soon_threadsafe(queue.put_nowait, line)
+
+    def run_watcher():
+        watch_loop(watcher, claude_logger, session, stop_event, auto_approve,
+                   extract_fn, load_md, on_line)
+
+    watcher_thread = threading.Thread(target=run_watcher, daemon=True)
+    watcher_thread.start()
+
     try:
         client.run(appid=appid, secret=secret)
     finally:
+        stop_event["stop"] = True
         watcher.close()
