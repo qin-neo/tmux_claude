@@ -171,7 +171,9 @@ def extract_message(obj, state):
         msg = obj.get("message", {})
         lines = []
         has_tool_use = False
-        waiting = state.get("permissionMode", "default") == "default"
+        # bypassPermissions 时不需要审批，其他模式（default/acceptEdits/plan）都可能需要
+        perm = state.get("permissionMode", "default")
+        waiting = perm != "bypassPermissions"
         for block in msg.get("content", []):
             if block.get("type") == "text":
                 text = _clean_text(block.get("text", ""))
