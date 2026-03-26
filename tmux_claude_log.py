@@ -238,7 +238,11 @@ def extract_message_generic(obj, state):
         else:
             inp = args if isinstance(args, dict) else {}
         summary = _format_tool_use(name, inp)
-        return [f"[TOOL USE] {name}: {summary} (waiting for approval)"], True
+        # 系统自动调度的工具不需要权限确认
+        _NO_APPROVE = {"Agent", "TaskCreate", "TaskUpdate", "TaskGet", "TaskList", "TodoRead", "TodoWrite"}
+        needs_approve = name not in _NO_APPROVE
+        suffix = " (waiting for approval)" if needs_approve else ""
+        return [f"[TOOL USE] {name}: {summary}{suffix}"], needs_approve
 
     if tp == "function_call_result":
         output = obj.get("output", "")
@@ -260,20 +264,26 @@ def project_dir_to_internal(project_dir, claude_dir=None):
     """转换项目目录到内部目录名，兼容两种风格。
     - /opt/uas → -opt-uas (旧风格，前导 -, 下划线转连字符) → extract_message
     - /root/host_net_migrate → root-host_net_migrate (新风格，保留下划线) → extract_message_generic
-    返回 (dir_name, extract_fn)。
+    同时尝试 symlink resolve 后的路径。返回 (dir_name, extract_fn)。
     """
-    base = project_dir.lstrip("/").replace("/", "-")
-    old_style = "-" + base.replace("_", "-")  # Claude CLI: 下划线转连字符
-    new_style = base                           # generic: 保留下划线
+    real_dir = os.path.realpath(project_dir)
+    candidates = [project_dir]
+    if real_dir != project_dir:
+        candidates.append(real_dir)
 
     if claude_dir:
         projects_dir = os.path.join(claude_dir, "projects")
-        if os.path.isdir(os.path.join(projects_dir, old_style)):
-            return old_style, extract_message
-        if os.path.isdir(os.path.join(projects_dir, new_style)):
-            return new_style, extract_message_generic
+        for d in candidates:
+            base = d.lstrip("/").replace("/", "-")
+            old_style = "-" + base.replace("_", "-")
+            new_style = base
+            if os.path.isdir(os.path.join(projects_dir, old_style)):
+                return old_style, extract_message
+            if os.path.isdir(os.path.join(projects_dir, new_style)):
+                return new_style, extract_message_generic
 
-    return new_style, extract_message_generic
+    base = real_dir.lstrip("/").replace("/", "-")
+    return base, extract_message_generic
 
 
 # ── inotify 监控 ──
