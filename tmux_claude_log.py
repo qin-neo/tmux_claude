@@ -459,11 +459,13 @@ def watch_loop(watcher, logger, session_name, stop_event, auto_approve,
     last_session_check = time.monotonic()
     last_claudemd_read = time.monotonic()
     state = {}
-    pending_approve = None  # (发送时间, 已重试次数)
+    pending_count = 0       # 待确认的 tool use 数量
+    last_approve_time = 0   # 上次发 Enter 的时间
 
     while not stop_event["stop"]:
-        poll_timeout = 1.0 if pending_approve else SESSION_CHECK_INTERVAL
-        got_result = False
+        poll_timeout = 1.0 if pending_count > 0 else SESSION_CHECK_INTERVAL
+        batch_approve_count = 0
+        result_count = 0
 
         for obj in watcher.poll(timeout=poll_timeout):
             lines, needs_approve = extract_fn(obj, state)
@@ -472,23 +474,25 @@ def watch_loop(watcher, logger, session_name, stop_event, auto_approve,
                 if on_line:
                     on_line(line)
                 if line.startswith("[TOOL RESULT]") or line.startswith("[TOOL ERROR]"):
-                    got_result = True
-            if needs_approve and auto_approve:
-                send_approve(session_name)
-                logger.info("[tmux_claude auto approve]")
-                pending_approve = (time.monotonic(), 0)
+                    result_count += 1
+            if needs_approve:
+                batch_approve_count += 1
 
-        # 已收到 tool result，清除等待状态
-        if got_result:
-            pending_approve = None
+        # 收到 result，减少待确认计数
+        if result_count > 0:
+            pending_count = max(0, pending_count - result_count)
 
-        # 超过 1 秒未收到 tool result，重发一次 Enter
-        if pending_approve:
-            sent_time, retries = pending_approve
-            if retries < 1 and time.monotonic() - sent_time >= 1.0:
+        # 新增待确认
+        if batch_approve_count > 0:
+            pending_count += batch_approve_count
+
+        # 有待确认且距上次发 Enter 超过 3 秒，发一次
+        if pending_count > 0 and auto_approve:
+            now = time.monotonic()
+            if now - last_approve_time >= 3.0:
                 send_approve(session_name)
-                logger.info("[tmux_claude auto approve] retry")
-                pending_approve = (sent_time, retries + 1)
+                logger.info(f"[tmux_claude auto approve] pending={pending_count}")
+                last_approve_time = now
 
         now = time.monotonic()
         if now - last_session_check >= SESSION_CHECK_INTERVAL:
