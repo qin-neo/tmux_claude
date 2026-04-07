@@ -475,6 +475,9 @@ def watch_loop(watcher, logger, session_name, stop_event, auto_approve,
                     on_line(line)
                 if line.startswith("[TOOL RESULT]") or line.startswith("[TOOL ERROR]"):
                     result_count += 1
+                elif line.startswith("[USER]") or line.startswith("[ASSISTANT]"):
+                    # 新的对话轮次，清除残留的 pending
+                    pending_count = 0
             if needs_approve:
                 batch_approve_count += 1
 
