@@ -461,6 +461,8 @@ def watch_loop(watcher, logger, session_name, stop_event, auto_approve,
     state = {}
     pending_count = 0       # 待确认的 tool use 数量
     last_approve_time = 0   # 上次发 Enter 的时间
+    approve_retries = 0     # 当前 pending 连续重试次数
+    MAX_APPROVE_RETRIES = 10
 
     while not stop_event["stop"]:
         poll_timeout = 1.0 if pending_count > 0 else SESSION_CHECK_INTERVAL
@@ -488,14 +490,21 @@ def watch_loop(watcher, logger, session_name, stop_event, auto_approve,
         # 新增待确认
         if batch_approve_count > 0:
             pending_count += batch_approve_count
+            approve_retries = 0
 
         # 有待确认且距上次发 Enter 超过 3 秒，发一次
         if pending_count > 0 and auto_approve:
-            now = time.monotonic()
-            if now - last_approve_time >= 3.0:
-                send_approve(session_name)
-                logger.info(f"[tmux_claude auto approve] pending={pending_count}")
-                last_approve_time = now
+            if approve_retries >= MAX_APPROVE_RETRIES:
+                logger.info(f"[tmux_claude auto approve] give up after {MAX_APPROVE_RETRIES} retries")
+                pending_count = 0
+                approve_retries = 0
+            else:
+                now = time.monotonic()
+                if now - last_approve_time >= 3.0:
+                    send_approve(session_name)
+                    logger.info(f"[tmux_claude auto approve] pending={pending_count}")
+                    last_approve_time = now
+                    approve_retries += 1
 
         now = time.monotonic()
         if now - last_session_check >= SESSION_CHECK_INTERVAL:
