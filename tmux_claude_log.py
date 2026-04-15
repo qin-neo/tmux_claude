@@ -462,7 +462,7 @@ def watch_loop(watcher, logger, session_name, stop_event, auto_approve,
     pending_count = 0       # 待确认的 tool use 数量
     last_approve_time = 0   # 上次发 Enter 的时间
     approve_retries = 0     # 当前 pending 连续重试次数
-    MAX_APPROVE_RETRIES = 10
+    MAX_APPROVE_RETRIES = 3
 
     while not stop_event["stop"]:
         poll_timeout = 1.0 if pending_count > 0 else SESSION_CHECK_INTERVAL
