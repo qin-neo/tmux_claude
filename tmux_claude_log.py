@@ -16,6 +16,7 @@ import struct
 import ctypes
 import ctypes.util
 import select
+import socket
 import subprocess
 import signal
 import logging
@@ -566,6 +567,15 @@ def main():
     project_dir = os.path.abspath(os.path.expanduser(args.project_dir))
     claude_dir = os.path.abspath(os.path.expanduser(args.claude_dir))
     session = args.session or os.path.basename(project_dir).replace(".", "_").replace(":", "_")
+
+    # 单例：用 abstract unix socket，进程退出自动释放
+    sock_name = f"\0tmux_claude_log_{session}"
+    _singleton_sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        _singleton_sock.bind(sock_name)
+    except OSError:
+        print(f"[INFO] 已有实例在运行: {session}", file=sys.stderr)
+        sys.exit(0)
 
     if not os.path.isdir(project_dir):
         print(f"错误: 目录不存在: {project_dir}", file=sys.stderr)
