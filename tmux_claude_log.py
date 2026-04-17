@@ -16,7 +16,6 @@ import struct
 import ctypes
 import ctypes.util
 import select
-import socket
 import subprocess
 import signal
 import logging
@@ -443,6 +442,19 @@ def send_to_tmux(session_name, text):
     )
 
 
+def is_waiting_approval(session_name):
+    """通过 tmux capture-pane 检测屏幕是否在等待确认"""
+    r = subprocess.run(
+        ["tmux", "capture-pane", "-t", session_name, "-p", "-S", "-5"],
+        capture_output=True, text=True,
+    )
+    if r.returncode != 0:
+        return False
+    text = r.stdout
+    pos = text.find("Do you want to")
+    return pos >= 0 and text.find("1. Yes", pos) >= 0
+
+
 def send_approve(session_name):
     """通过 tmux 发送 Enter 自动确认权限请求"""
     subprocess.run(
@@ -515,9 +527,15 @@ def watch_loop(watcher, logger, session_name, stop_event, auto_approve,
         # 有待确认且距上次发 Enter 超过 3 秒，发一次
         if pending_count > 0 and auto_approve:
             if approve_retries >= MAX_APPROVE_RETRIES:
-                logger.info(f"[tmux_claude auto approve] give up after {MAX_APPROVE_RETRIES} retries")
-                pending_count = 0
-                approve_retries = 0
+                # give up 前用 capture-pane 兜底：屏幕确实卡着就继续重试
+                if is_waiting_approval(session_name):
+                    send_approve(session_name)
+                    approve_retries = 0
+                    logger.info(f"[tmux_claude auto approve] screen confirmed, reset retries")
+                else:
+                    logger.info(f"[tmux_claude auto approve] give up after {MAX_APPROVE_RETRIES} retries")
+                    pending_count = 0
+                    approve_retries = 0
             else:
                 now = time.monotonic()
                 if now - last_approve_time >= 3.0:
@@ -567,15 +585,6 @@ def main():
     project_dir = os.path.abspath(os.path.expanduser(args.project_dir))
     claude_dir = os.path.abspath(os.path.expanduser(args.claude_dir))
     session = args.session or os.path.basename(project_dir).replace(".", "_").replace(":", "_")
-
-    # 单例：用 abstract unix socket，进程退出自动释放
-    sock_name = f"\0tmux_claude_log_{session}"
-    _singleton_sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    try:
-        _singleton_sock.bind(sock_name)
-    except OSError:
-        print(f"[INFO] 已有实例在运行: {session}", file=sys.stderr)
-        sys.exit(0)
 
     if not os.path.isdir(project_dir):
         print(f"错误: 目录不存在: {project_dir}", file=sys.stderr)
