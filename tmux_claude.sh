@@ -198,8 +198,8 @@ do_start() {
         LOG_ARGS="$LOG_ARGS --full-auto"
     fi
 
-    # tmux 启动命令：log 守护进程后台运行，claude 前台
-    TMUX_CMD="python3 '$LOG_SCRIPT' $LOG_ARGS >/dev/null 2>/dev/null & $CLAUDE_CMD --continue || $CLAUDE_CMD"
+    # tmux 启动命令：log 守护进程后台运行（crash 自动重启），claude 前台
+    TMUX_CMD="while true; do python3 '$LOG_SCRIPT' $LOG_ARGS >/dev/null 2>/dev/null; sleep 1; done & $CLAUDE_CMD --continue || $CLAUDE_CMD"
 
     # 启动 tmux session
     tmux new-session -d -s "$SESSION_NAME" -c "$DIR_ABS" "$TMUX_CMD"
