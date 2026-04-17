@@ -260,30 +260,42 @@ def extract_message_generic(obj, state):
     return [], False
 
 
-def project_dir_to_internal(project_dir, claude_dir=None):
-    """转换项目目录到内部目录名，兼容两种风格。
+def project_dirs_to_internal(project_dir, claude_dir=None):
+    """转换项目目录到内部目录名列表，兼容两种风格，同时监控所有存在的候选目录。
     - /opt/uas → -opt-uas (旧风格，前导 -, 下划线转连字符) → extract_message
     - /root/host_net_migrate → root-host_net_migrate (新风格，保留下划线) → extract_message_generic
-    同时尝试 symlink resolve 后的路径。返回 (dir_name, extract_fn)。
+    返回 [(dir_path, extract_fn), ...] 列表（可能包含多个匹配项）。
     """
     real_dir = os.path.realpath(project_dir)
     candidates = [project_dir]
     if real_dir != project_dir:
         candidates.append(real_dir)
 
+    results = []
+    seen = set()
     if claude_dir:
         projects_dir = os.path.join(claude_dir, "projects")
         for d in candidates:
             base = d.lstrip("/").replace("/", "-")
             old_style = "-" + base.replace("_", "-")
             new_style = base
-            if os.path.isdir(os.path.join(projects_dir, old_style)):
-                return old_style, extract_message
-            if os.path.isdir(os.path.join(projects_dir, new_style)):
-                return new_style, extract_message_generic
+            for name, fn in [(old_style, extract_message), (new_style, extract_message_generic)]:
+                full = os.path.join(projects_dir, name)
+                if full not in seen and os.path.isdir(full):
+                    results.append((full, fn))
+                    seen.add(full)
 
-    base = real_dir.lstrip("/").replace("/", "-")
-    return base, extract_message_generic
+    if not results:
+        # 目录还不存在，返回两个候选让调用方等待
+        base = real_dir.lstrip("/").replace("/", "-")
+        old_style = "-" + base.replace("_", "-")
+        new_style = base
+        projects_dir = os.path.join(claude_dir, "projects") if claude_dir else ""
+        results = [
+            (os.path.join(projects_dir, old_style), extract_message),
+            (os.path.join(projects_dir, new_style), extract_message_generic),
+        ]
+    return results
 
 
 # ── inotify 监控 ──
@@ -326,37 +338,41 @@ class JsonlTracker:
 
 
 class ProjectWatcher:
-    """用 inotify 监控 claude 项目目录下所有 JSONL 文件变化"""
-    def __init__(self, internal_dir, skip_existing=True):
-        self.internal_dir = internal_dir
-        self.trackers = {}  # path → JsonlTracker
+    """用 inotify 监控一个或多个 claude 项目目录下所有 JSONL 文件变化"""
+    def __init__(self, internal_dirs, skip_existing=True):
+        # internal_dirs: [(dir_path, extract_fn), ...]
         self._inotify = Inotify()
+        self.trackers = {}        # path → JsonlTracker
+        self._dir_fn = {}         # dir_path → extract_fn（watched 目录到解析函数）
 
-        # watch 根目录（捕获新 jsonl 文件和新子目录）
-        self._watch_dir(internal_dir)
+        for d, fn in internal_dirs:
+            if not os.path.isdir(d):
+                continue
+            self._watch_dir(d, fn)
+            for root, dirs, _files in os.walk(d):
+                for sub in dirs:
+                    self._watch_dir(os.path.join(root, sub), fn)
+            for entry in self._iter_jsonl_files(d):
+                if entry not in self.trackers:
+                    self.trackers[entry] = (JsonlTracker(entry, skip_existing=skip_existing), fn)
+                    logging.getLogger("claude_log").debug("track file: %s (offset=%d)", entry, self.trackers[entry][0].offset)
 
-        # 递归 watch 所有已有子目录
-        for root, dirs, _files in os.walk(internal_dir):
-            for d in dirs:
-                self._watch_dir(os.path.join(root, d))
+    def _watch_dir(self, path, fn):
+        try:
+            self._inotify.add_watch(path, IN_MODIFY | IN_CREATE)
+            self._dir_fn[path] = fn
+            logging.getLogger("claude_log").debug("watch dir: %s", path)
+        except OSError:
+            pass
 
-        # 初始化已有文件的 tracker
-        for entry in self._iter_jsonl_files():
-            self.trackers[entry] = JsonlTracker(entry, skip_existing=skip_existing)
-            logging.getLogger("claude_log").debug("track file: %s (offset=%d)", entry, self.trackers[entry].offset)
-
-    def _watch_dir(self, path):
-        self._inotify.add_watch(path, IN_MODIFY | IN_CREATE)
-        logging.getLogger("claude_log").debug("watch dir: %s", path)
-
-    def _iter_jsonl_files(self):
-        for root, dirs, files in os.walk(self.internal_dir):
+    def _iter_jsonl_files(self, root_dir):
+        for root, dirs, files in os.walk(root_dir):
             for f in files:
                 if f.endswith(".jsonl"):
                     yield os.path.join(root, f)
 
     def poll(self, timeout):
-        """等待 inotify 事件，返回新的 JSONL 对象列表"""
+        """等待 inotify 事件，返回 (obj, extract_fn) 列表"""
         events = self._inotify.read_events(timeout)
         log = logging.getLogger("claude_log")
         modified_files = set()
@@ -366,26 +382,29 @@ class ProjectWatcher:
             log.debug("inotify event: mask=0x%x name=%s dir=%s", mask, name, dir_path)
 
             if mask & IN_CREATE and mask & IN_ISDIR:
-                self._watch_dir(full_path)
+                fn = self._dir_fn.get(dir_path, extract_message_generic)
+                self._watch_dir(full_path, fn)
                 continue
 
             if not name.endswith(".jsonl"):
                 continue
 
             if mask & IN_CREATE and full_path not in self.trackers:
-                self.trackers[full_path] = JsonlTracker(full_path, skip_existing=False)
+                fn = self._dir_fn.get(dir_path, extract_message_generic)
+                self.trackers[full_path] = (JsonlTracker(full_path, skip_existing=False), fn)
                 log.debug("new file tracker: %s", full_path)
 
             modified_files.add(full_path)
 
         results = []
         for path in modified_files:
-            tracker = self.trackers.get(path)
-            if tracker:
+            entry = self.trackers.get(path)
+            if entry:
+                tracker, fn = entry
                 objs = tracker.read_new()
                 if objs:
                     log.debug("read %d objects from %s", len(objs), path)
-                results.extend(objs)
+                results.extend((obj, fn) for obj in objs)
         return results
 
     def close(self):
@@ -452,7 +471,7 @@ def check_claudemd_refresh(session_name, last_check, interval=CLAUDEMD_INTERVAL)
 # ── 主循环 ──
 
 def watch_loop(watcher, logger, session_name, stop_event, auto_approve,
-               extract_fn=extract_message, load_md=False, on_line=None):
+               load_md=False, on_line=None):
     """主监听循环。
     on_line(line): 可选回调，每条日志行调用一次（供 QQ bot 等外部消费）。
     """
@@ -469,7 +488,7 @@ def watch_loop(watcher, logger, session_name, stop_event, auto_approve,
         batch_approve_count = 0
         result_count = 0
 
-        for obj in watcher.poll(timeout=poll_timeout):
+        for obj, extract_fn in watcher.poll(timeout=poll_timeout):
             lines, needs_approve = extract_fn(obj, state)
             for line in lines:
                 logger.info(line)
@@ -565,8 +584,9 @@ def main():
     detail = config.get("detail", False)
     qq_config = config.get("qq_bot")
 
-    internal_name, extract_fn = project_dir_to_internal(project_dir, claude_dir)
-    internal_dir = os.path.join(claude_dir, "projects", internal_name)
+    internal_dirs = project_dirs_to_internal(project_dir, claude_dir)
+    # 取第一个用于 QQ bot（兼容旧接口）
+    internal_dir, extract_fn = internal_dirs[0]
 
     # 有 QQ Bot 配置则启动 QQ Bot
     if qq_config:
@@ -596,17 +616,20 @@ def main():
     logger = setup_logging(log_file)
 
     mode_str = " (auto-approve)" if auto_approve else ""
-    fn_name = extract_fn.__name__
-    print(f"[INFO] claude_log 启动{mode_str} [{fn_name}]: project={project_dir}, log={log_file}", file=sys.stderr)
+    print(f"[INFO] claude_log 启动{mode_str}: project={project_dir}, log={log_file}", file=sys.stderr)
+    for d, fn in internal_dirs:
+        print(f"[INFO] 监控目录 [{fn.__name__}]: {d}", file=sys.stderr)
 
-    # 等待 claude 数据目录就绪
-    if not os.path.isdir(internal_dir):
-        print(f"[INFO] 等待 claude 数据目录: {internal_dir}", file=sys.stderr)
-        while not os.path.isdir(internal_dir):
+    # 等待至少一个 claude 数据目录就绪
+    ready = [d for d, _ in internal_dirs if os.path.isdir(d)]
+    if not ready:
+        first_dir = internal_dirs[0][0]
+        print(f"[INFO] 等待 claude 数据目录: {first_dir}", file=sys.stderr)
+        while not any(os.path.isdir(d) for d, _ in internal_dirs):
             time.sleep(1)
         print(f"[INFO] claude 数据目录已就绪", file=sys.stderr)
 
-    watcher = ProjectWatcher(internal_dir, skip_existing=True)
+    watcher = ProjectWatcher(internal_dirs, skip_existing=True)
 
     stop_event = {"stop": False}
 
@@ -618,7 +641,7 @@ def main():
     signal.signal(signal.SIGINT, signal_handler)
 
     try:
-        watch_loop(watcher, logger, session, stop_event, auto_approve, extract_fn, load_md)
+        watch_loop(watcher, logger, session, stop_event, auto_approve, load_md)
     finally:
         watcher.close()
         print(f"[INFO] claude_log 已退出: project={project_dir}", file=sys.stderr)

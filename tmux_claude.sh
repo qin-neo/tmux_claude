@@ -44,6 +44,7 @@ usage() {
     echo "选项:"
     echo "  --daemon      后台启动，不 attach tmux"
     echo "  --all-yes     自动确认所有权限请求 (覆盖配置文件)"
+    echo "  --full-auto   全自动模式 (含 --all-yes，空闲 60s 后自动催促)"
     echo "  --claude CMD  指定 claude 启动命令 (默认: $DEFAULT_CLAUDE_CMD)"
     echo ""
     echo "配置文件: <dir>/tmux_claude.json"
@@ -105,6 +106,7 @@ esac
 # 解析选项
 DAEMON_MODE=false
 ALL_YES=false
+FULL_AUTO=false
 CLAUDE_CMD="$DEFAULT_CLAUDE_CMD"
 
 while [[ $# -gt 0 ]]; do
@@ -114,6 +116,11 @@ while [[ $# -gt 0 ]]; do
             shift
             ;;
         --all-yes)
+            ALL_YES=true
+            shift
+            ;;
+        --full-auto)
+            FULL_AUTO=true
             ALL_YES=true
             shift
             ;;
@@ -186,6 +193,9 @@ do_start() {
     LOG_ARGS="'$DIR_ABS' --session '$SESSION_NAME' --claude-dir '$CLAUDE_DIR'"
     if [[ "$ALL_YES" == "true" ]]; then
         LOG_ARGS="$LOG_ARGS --all-yes"
+    fi
+    if [[ "$FULL_AUTO" == "true" ]]; then
+        LOG_ARGS="$LOG_ARGS --full-auto"
     fi
 
     # tmux 启动命令：log 守护进程后台运行，claude 前台
