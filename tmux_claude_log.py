@@ -443,16 +443,34 @@ def send_to_tmux(session_name, text):
 
 
 def is_waiting_approval(session_name):
-    """通过 tmux capture-pane 检测屏幕是否在等待确认"""
+    """通过 tmux capture-pane 检测屏幕是否在等待确认。
+
+    三道防线，全过才返回 True：
+    1. pane 不在 copy/view-mode（用户正在滚屏/选择时不打扰）
+    2. 屏幕有 "Do you want to" 提示
+    3. 屏幕有 "> 1. Yes" 或 "❯ 1. Yes"（选中光标，弹窗激活时才出现）
+       CodeBuddy Code 用 ">"，Claude CLI 用 "❯"
+    """
+    # 1. 排除 copy/view-mode
     r = subprocess.run(
-        ["tmux", "capture-pane", "-t", session_name, "-p", "-S", "-5"],
+        ["tmux", "display-message", "-p", "-t", session_name, "#{pane_in_mode}"],
+        capture_output=True, text=True,
+    )
+    if r.returncode != 0 or r.stdout.strip() == "1":
+        return False
+
+    # 2-3. 截屏检测活跃弹窗特征
+    r = subprocess.run(
+        ["tmux", "capture-pane", "-t", session_name, "-p", "-S", "-30"],
         capture_output=True, text=True,
     )
     if r.returncode != 0:
         return False
     text = r.stdout
-    pos = text.find("Do you want to")
-    return pos >= 0 and text.find("1. Yes", pos) >= 0
+    if "Do you want to" not in text:
+        return False
+    # 匹配活跃选项光标：可能是 "> 1. Yes" 或 "❯ 1. Yes"
+    return ("> 1. Yes" in text) or ("❯ 1. Yes" in text)
 
 
 def send_approve(session_name):
@@ -486,65 +504,35 @@ def check_claudemd_refresh(session_name, last_check, interval=CLAUDEMD_INTERVAL)
 def watch_loop(watcher, logger, session_name, stop_event, auto_approve,
                load_md=False, on_line=None):
     """主监听循环。
+
+    JSONL 仅用于日志记录；auto approve 完全由屏幕状态驱动，与 JSONL 解耦。
     on_line(line): 可选回调，每条日志行调用一次（供 QQ bot 等外部消费）。
     """
     last_session_check = time.monotonic()
     last_claudemd_read = time.monotonic()
+    last_approve_check = 0
     state = {}
-    pending_count = 0       # 待确认的 tool use 数量
-    last_approve_time = 0   # 上次发 Enter 的时间
-    approve_retries = 0     # 当前 pending 连续重试次数
-    MAX_APPROVE_RETRIES = 3
+    APPROVE_CHECK_INTERVAL = 2.0  # 屏幕检测间隔
 
     while not stop_event["stop"]:
-        poll_timeout = 1.0 if pending_count > 0 else SESSION_CHECK_INTERVAL
-        batch_approve_count = 0
-        result_count = 0
-
-        for obj, extract_fn in watcher.poll(timeout=poll_timeout):
-            lines, needs_approve = extract_fn(obj, state)
+        # 1. JSONL: 纯日志，与 auto approve 无关
+        for obj, extract_fn in watcher.poll(timeout=1.0):
+            lines, _ = extract_fn(obj, state)
             for line in lines:
                 logger.info(line)
                 if on_line:
                     on_line(line)
-                if line.startswith("[TOOL RESULT]") or line.startswith("[TOOL ERROR]"):
-                    result_count += 1
-                elif line.startswith("[USER]") or line.startswith("[ASSISTANT]"):
-                    # 新的对话轮次，清除残留的 pending
-                    pending_count = 0
-            if needs_approve:
-                batch_approve_count += 1
-
-        # 收到 result，减少待确认计数
-        if result_count > 0:
-            pending_count = max(0, pending_count - result_count)
-
-        # 新增待确认
-        if batch_approve_count > 0:
-            pending_count += batch_approve_count
-            approve_retries = 0
-
-        # 有待确认且距上次发 Enter 超过 3 秒，发一次
-        if pending_count > 0 and auto_approve:
-            if approve_retries >= MAX_APPROVE_RETRIES:
-                # give up 前用 capture-pane 兜底：屏幕确实卡着就继续重试
-                if is_waiting_approval(session_name):
-                    send_approve(session_name)
-                    approve_retries = 0
-                    logger.info(f"[tmux_claude auto approve] screen confirmed, reset retries")
-                else:
-                    logger.info(f"[tmux_claude auto approve] give up after {MAX_APPROVE_RETRIES} retries")
-                    pending_count = 0
-                    approve_retries = 0
-            else:
-                now = time.monotonic()
-                if now - last_approve_time >= 3.0:
-                    send_approve(session_name)
-                    logger.info(f"[tmux_claude auto approve] pending={pending_count}")
-                    last_approve_time = now
-                    approve_retries += 1
 
         now = time.monotonic()
+
+        # 2. auto approve: 独立定时，屏幕检测是唯一判据
+        if auto_approve and now - last_approve_check >= APPROVE_CHECK_INTERVAL:
+            last_approve_check = now
+            if is_waiting_approval(session_name):
+                send_approve(session_name)
+                logger.info("[tmux_claude auto approve] sent Enter")
+
+        # 3. session 存活检查
         if now - last_session_check >= SESSION_CHECK_INTERVAL:
             last_session_check = now
             if not check_tmux_session(session_name):
