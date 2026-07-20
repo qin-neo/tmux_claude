@@ -430,7 +430,8 @@ def setup_logging(log_file):
 def check_tmux_session(session_name):
     """检查 tmux session 是否存在"""
     return subprocess.run(
-        ["tmux", "has-session", "-t", session_name], capture_output=True,
+        ["tmux", "has-session", "-t", session_name],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
     ).returncode == 0
 
 
@@ -438,7 +439,7 @@ def send_to_tmux(session_name, text):
     """发送文本到 tmux session"""
     subprocess.run(
         ["tmux", "send-keys", "-t", session_name, text, "Enter"],
-        capture_output=True,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
     )
 
 
@@ -454,7 +455,7 @@ def is_waiting_approval(session_name):
     # 1. 排除 copy/view-mode
     r = subprocess.run(
         ["tmux", "display-message", "-p", "-t", session_name, "#{pane_in_mode}"],
-        capture_output=True, text=True,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True,
     )
     if r.returncode != 0 or r.stdout.strip() == "1":
         return False
@@ -462,7 +463,7 @@ def is_waiting_approval(session_name):
     # 2-3. 截屏检测活跃弹窗特征
     r = subprocess.run(
         ["tmux", "capture-pane", "-t", session_name, "-p", "-S", "-30"],
-        capture_output=True, text=True,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True,
     )
     if r.returncode != 0:
         return False
@@ -477,7 +478,7 @@ def send_approve(session_name):
     """通过 tmux 发送 Enter 自动确认权限请求"""
     subprocess.run(
         ["tmux", "send-keys", "-t", session_name, "Enter"],
-        capture_output=True,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
     )
 
 
