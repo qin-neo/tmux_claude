@@ -34,6 +34,7 @@ _EVENT_HEADER_SIZE = 16  # wd(4) + mask(4) + cookie(4) + len(4)
 _libc = ctypes.CDLL(ctypes.util.find_library("c"), use_errno=True)
 
 _RE_ANSI = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]")
+_RE_429 = re.compile(r"^\[ASSISTANT\]\s*429\b", re.IGNORECASE)
 _RE_BASH_INPUT = re.compile(r"<bash-input>(.*?)</bash-input>", re.DOTALL)
 _RE_BASH_STDOUT = re.compile(r"<bash-stdout>(.*?)</bash-stdout>", re.DOTALL)
 
@@ -523,6 +524,10 @@ def watch_loop(watcher, logger, session_name, stop_event, auto_approve,
                 logger.info(line)
                 if on_line:
                     on_line(line)
+                # auto continue: 检测到 429 限流立刻发送 continue
+                if _RE_429.search(line):
+                    send_to_tmux(session_name, "continue")
+                    logger.info("[tmux_claude auto continue] sent continue (429 detected)")
 
         now = time.monotonic()
 
