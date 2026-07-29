@@ -437,11 +437,45 @@ def check_tmux_session(session_name):
 
 
 def send_to_tmux(session_name, text):
-    """发送文本到 tmux session"""
-    subprocess.run(
-        ["tmux", "send-keys", "-t", session_name, text, "Enter"],
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    """发送文本到 tmux session。
+
+    防"文本进了输入框但 Enter 没提交"的老问题：
+    1. 先退 copy-mode，C-a C-k 两次清空输入框残留
+    2. 文本与 Enter 分两次 send-keys，间隔 0.8s
+    3. 2s 后校验：pane 尾部仍看到该文本说明未提交，补发 Enter
+    """
+    def _keys(*keys):
+        subprocess.run(
+            ["tmux", "send-keys", "-t", session_name, *keys],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+
+    r = subprocess.run(
+        ["tmux", "display-message", "-p", "-t", session_name, "#{pane_in_mode}"],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True,
     )
+    if r.returncode == 0 and r.stdout.strip() == "1":
+        _keys("-X", "cancel")
+
+    for _ in range(2):
+        _keys("C-a")
+        time.sleep(0.3)
+        _keys("C-k")
+        time.sleep(0.3)
+
+    _keys(text)
+    time.sleep(0.8)
+    _keys("Enter")
+    time.sleep(2)
+
+    r = subprocess.run(
+        ["tmux", "capture-pane", "-t", session_name, "-p"],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True,
+    )
+    if r.returncode == 0 and any(text in line for line in r.stdout.splitlines()[-6:]):
+        _keys("Enter")
+        time.sleep(1)
+        _keys("Enter")
 
 
 def is_waiting_approval(session_name):
