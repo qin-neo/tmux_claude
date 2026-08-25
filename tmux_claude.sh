@@ -170,6 +170,24 @@ fi
 CLAUDE_NAME="${CLAUDE_BIN##*/}"
 CLAUDE_DIR="$HOME/.$CLAUDE_NAME"
 
+# --claude 显式传参时，覆盖保存到配置文件（无则创建，其他字段保留）
+if [[ "$CLAUDE_CMD_SET" == "true" ]]; then
+    python3 - "$CONFIG_FILE" "$CLAUDE_CMD" <<'EOF'
+import json, os, sys
+path, cmd = sys.argv[1], sys.argv[2]
+cfg = {}
+if os.path.exists(path):
+    try:
+        cfg = json.load(open(path))
+    except Exception:
+        pass
+cfg["claude_cmd"] = cmd
+with open(path, "w") as f:
+    json.dump(cfg, f, ensure_ascii=False, indent=2)
+    f.write("\n")
+EOF
+fi
+
 # session 名取目录的 basename，替换 tmux 不允许的字符（. 和 :）
 SESSION_NAME="$(basename "$DIR_ABS" | tr '.:' '_')"
 
