@@ -12,11 +12,12 @@
 #   --daemon      后台启动，不 attach tmux
 #   --claude CMD  指定 claude 启动命令
 #
-# 配置文件: <dir>/tmux_claude.json
+# 配置文件: <dir>/tmux_claude.json (存在时 --all-yes/--claude 可省略，直接读 json)
 #   {
 #     "auto_approve": false,
 #     "load_md": false,
 #     "detail": false,
+#     "claude_cmd": "claude --effort max",
 #     "qq_bot": {"appid": "...", "secret": "...", "test_c2c_openid": "..."}
 #   }
 
@@ -45,7 +46,7 @@ usage() {
     echo "  --daemon      后台启动，不 attach tmux"
     echo "  --all-yes     自动确认所有权限请求 (覆盖配置文件)"
     echo "  --full-auto   全自动模式 (含 --all-yes，空闲 60s 后自动催促)"
-    echo "  --claude CMD  指定 claude 启动命令 (默认: $DEFAULT_CLAUDE_CMD)"
+    echo "  --claude CMD  指定 claude 启动命令 (默认: $DEFAULT_CLAUDE_CMD，配置文件 claude_cmd 可覆盖)"
     echo ""
     echo "配置文件: <dir>/tmux_claude.json"
     echo "  auto_approve: 自动确认权限"
@@ -107,6 +108,7 @@ esac
 DAEMON_MODE=false
 ALL_YES=false
 FULL_AUTO=false
+CLAUDE_CMD_SET=false
 CLAUDE_CMD="$DEFAULT_CLAUDE_CMD"
 
 while [[ $# -gt 0 ]]; do
@@ -130,6 +132,7 @@ while [[ $# -gt 0 ]]; do
                 exit 1
             fi
             CLAUDE_CMD="$2"
+            CLAUDE_CMD_SET=true
             shift 2
             ;;
         *)
@@ -139,6 +142,21 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
+
+DIR_ABS="$(cd "$DIR_ARG" 2>/dev/null && pwd)"
+if [[ -z "$DIR_ABS" || ! -d "$DIR_ABS" ]]; then
+    echo "错误: 目录 '$DIR_ARG' 不存在"
+    exit 1
+fi
+
+# 有本地配置文件时，claude 启动命令可直接从 json 读取（--claude 显式传参优先）
+CONFIG_FILE="$DIR_ABS/tmux_claude.json"
+if [[ -f "$CONFIG_FILE" && "$CLAUDE_CMD_SET" == "false" ]]; then
+    CFG_CLAUDE_CMD="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("claude_cmd") or "")' "$CONFIG_FILE" 2>/dev/null)"
+    if [[ -n "$CFG_CLAUDE_CMD" ]]; then
+        CLAUDE_CMD="$CFG_CLAUDE_CMD"
+    fi
+fi
 
 # 检测 claude 二进制是否存在
 CLAUDE_BIN="${CLAUDE_CMD%% *}"
@@ -151,12 +169,6 @@ fi
 # 根据 claude 命令名推断数据目录
 CLAUDE_NAME="${CLAUDE_BIN##*/}"
 CLAUDE_DIR="$HOME/.$CLAUDE_NAME"
-
-DIR_ABS="$(cd "$DIR_ARG" 2>/dev/null && pwd)"
-if [[ -z "$DIR_ABS" || ! -d "$DIR_ABS" ]]; then
-    echo "错误: 目录 '$DIR_ARG' 不存在"
-    exit 1
-fi
 
 # session 名取目录的 basename，替换 tmux 不允许的字符（. 和 :）
 SESSION_NAME="$(basename "$DIR_ABS" | tr '.:' '_')"
@@ -198,8 +210,20 @@ do_start() {
         LOG_ARGS="$LOG_ARGS --full-auto"
     fi
 
-    # tmux 启动命令：log 守护进程后台运行（crash 自动重启），claude 前台
-    TMUX_CMD="while true; do python3 '$LOG_SCRIPT' $LOG_ARGS >/dev/null 2>/dev/null; sleep 1; done & $CLAUDE_CMD --continue || $CLAUDE_CMD"
+    # 有过往会话 jsonl 才 --continue；无历史时 --continue 会失败，走全新启动
+    BASE="${DIR_ABS#/}"
+    BASE="${BASE//\//-}"
+    OLD_STYLE="-${BASE//_/-}"
+    START_CMD="$CLAUDE_CMD"
+    for d in "$CLAUDE_DIR/projects/$OLD_STYLE" "$CLAUDE_DIR/projects/$BASE"; do
+        if find "$d" -name '*.jsonl' -print -quit 2>/dev/null | grep -q .; then
+            START_CMD="$CLAUDE_CMD --continue"
+            break
+        fi
+    done
+
+    # tmux 启动命令：log 守护进程后台运行（crash 自动重启），exec 让 claude 替换 pane shell
+    TMUX_CMD="while true; do python3 '$LOG_SCRIPT' $LOG_ARGS >/dev/null 2>/dev/null; sleep 1; done & exec $START_CMD"
 
     # 启动 tmux session
     tmux new-session -d -s "$SESSION_NAME" -c "$DIR_ABS" "$TMUX_CMD"
