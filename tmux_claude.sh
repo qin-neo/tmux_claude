@@ -191,14 +191,15 @@ fi
 # session 名取目录的 basename，替换 tmux 不允许的字符（. 和 :）
 SESSION_NAME="$(basename "$DIR_ABS" | tr '.:' '_')"
 
-# tmux -t 目标名默认按前缀匹配（tvs-dpdk 会命中 tvs-dpdk-master），
-# 加 = 前缀强制精确匹配，避免同名前缀的会话互相串台
+# tmux -t 目标按前缀匹配，= 前缀表示精确匹配；
+# pane 类命令目标以冒号结尾，取该会话的活动 window/pane
 SESSION_TARGET="=$SESSION_NAME"
+SESSION_PANE_TARGET="=$SESSION_NAME:"
 
 # === stop 命令 ===
 do_stop() {
     if tmux has-session -t "$SESSION_TARGET" 2>/dev/null; then
-        tmux send-keys -t "$SESSION_TARGET" "/exit" Enter
+        tmux send-keys -t "$SESSION_PANE_TARGET" "/exit" Enter
         echo "已发送 /exit 到 tmux 会话 '$SESSION_NAME'"
         for i in {1..30}; do
             if ! tmux has-session -t "$SESSION_TARGET" 2>/dev/null; then
@@ -250,11 +251,11 @@ do_start() {
     # 启动 tmux session
     tmux new-session -d -s "$SESSION_NAME" -c "$DIR_ABS" "$TMUX_CMD"
 
-    tmux set -t "$SESSION_TARGET" default-terminal "tmux-256color"
-    tmux set -ga -t "$SESSION_TARGET" terminal-overrides ",xterm-256color:Tc"
-    tmux set -t "$SESSION_TARGET" escape-time 10
-    tmux set -t "$SESSION_TARGET" history-limit 50000
-    tmux set -t "$SESSION_TARGET" mouse on
+    tmux set -t "$SESSION_PANE_TARGET" default-terminal "tmux-256color"
+    tmux set -ga -t "$SESSION_PANE_TARGET" terminal-overrides ",xterm-256color:Tc"
+    tmux set -t "$SESSION_PANE_TARGET" escape-time 10
+    tmux set -t "$SESSION_PANE_TARGET" history-limit 50000
+    tmux set -t "$SESSION_PANE_TARGET" mouse on
     tmux unbind -n MouseDown3Pane
 
     echo "已启动 tmux 会话 '$SESSION_NAME'"
