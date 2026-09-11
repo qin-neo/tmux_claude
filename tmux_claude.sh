@@ -191,18 +191,22 @@ fi
 # session 名取目录的 basename，替换 tmux 不允许的字符（. 和 :）
 SESSION_NAME="$(basename "$DIR_ABS" | tr '.:' '_')"
 
+# tmux -t 目标名默认按前缀匹配（tvs-dpdk 会命中 tvs-dpdk-master），
+# 加 = 前缀强制精确匹配，避免同名前缀的会话互相串台
+SESSION_TARGET="=$SESSION_NAME"
+
 # === stop 命令 ===
 do_stop() {
-    if tmux has-session -t "$SESSION_NAME" 2>/dev/null; then
-        tmux send-keys -t "$SESSION_NAME" "/exit" Enter
+    if tmux has-session -t "$SESSION_TARGET" 2>/dev/null; then
+        tmux send-keys -t "$SESSION_TARGET" "/exit" Enter
         echo "已发送 /exit 到 tmux 会话 '$SESSION_NAME'"
         for i in {1..30}; do
-            if ! tmux has-session -t "$SESSION_NAME" 2>/dev/null; then
+            if ! tmux has-session -t "$SESSION_TARGET" 2>/dev/null; then
                 break
             fi
             sleep 1
         done
-        if tmux has-session -t "$SESSION_NAME" 2>/dev/null; then
+        if tmux has-session -t "$SESSION_TARGET" 2>/dev/null; then
             echo "tmux 会话 '$SESSION_NAME' 未响应 /exit"
         else
             echo "tmux 会话 '$SESSION_NAME' 已退出"
@@ -214,9 +218,9 @@ do_stop() {
 
 # === start 命令 ===
 do_start() {
-    if tmux has-session -t "$SESSION_NAME" 2>/dev/null; then
+    if tmux has-session -t "$SESSION_TARGET" 2>/dev/null; then
         echo "会话 '$SESSION_NAME' 已存在，正在进入..."
-        exec tmux attach -d -t "$SESSION_NAME"
+        exec tmux attach -d -t "$SESSION_TARGET"
     fi
 
     # 构建 log 脚本参数
@@ -246,11 +250,11 @@ do_start() {
     # 启动 tmux session
     tmux new-session -d -s "$SESSION_NAME" -c "$DIR_ABS" "$TMUX_CMD"
 
-    tmux set -t "$SESSION_NAME" default-terminal "tmux-256color"
-    tmux set -ga -t "$SESSION_NAME" terminal-overrides ",xterm-256color:Tc"
-    tmux set -t "$SESSION_NAME" escape-time 10
-    tmux set -t "$SESSION_NAME" history-limit 50000
-    tmux set -t "$SESSION_NAME" mouse on
+    tmux set -t "$SESSION_TARGET" default-terminal "tmux-256color"
+    tmux set -ga -t "$SESSION_TARGET" terminal-overrides ",xterm-256color:Tc"
+    tmux set -t "$SESSION_TARGET" escape-time 10
+    tmux set -t "$SESSION_TARGET" history-limit 50000
+    tmux set -t "$SESSION_TARGET" mouse on
     tmux unbind -n MouseDown3Pane
 
     echo "已启动 tmux 会话 '$SESSION_NAME'"
@@ -265,7 +269,7 @@ do_start() {
     fi
 
     echo ""
-    exec tmux -u attach -d -t "$SESSION_NAME"
+    exec tmux -u attach -d -t "$SESSION_TARGET"
 }
 
 # === restart 命令 ===
