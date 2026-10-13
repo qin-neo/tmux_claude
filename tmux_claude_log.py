@@ -263,7 +263,7 @@ def extract_message_generic(obj, state):
 
 def project_dirs_to_internal(project_dir, claude_dir=None):
     """转换项目目录到内部目录名列表，兼容两种风格，同时监控所有存在的候选目录。
-    - /opt/uas → -opt-uas (旧风格，前导 -, 下划线转连字符) → extract_message
+    - /opt/uas → -opt-uas (旧风格，前导 -, 下划线和点号转连字符) → extract_message
     - /root/host_net_migrate → root-host_net_migrate (新风格，保留下划线) → extract_message_generic
     返回 [(dir_path, extract_fn), ...] 列表（可能包含多个匹配项）。
     """
@@ -278,8 +278,8 @@ def project_dirs_to_internal(project_dir, claude_dir=None):
         projects_dir = os.path.join(claude_dir, "projects")
         for d in candidates:
             base = d.lstrip("/").replace("/", "-")
-            old_style = "-" + base.replace("_", "-")
-            new_style = base
+            old_style = "-" + base.replace("_", "-").replace(".", "-")
+            new_style = base.replace(".", "-")
             for name, fn in [(old_style, extract_message), (new_style, extract_message_generic)]:
                 full = os.path.join(projects_dir, name)
                 if full not in seen and os.path.isdir(full):
@@ -289,8 +289,8 @@ def project_dirs_to_internal(project_dir, claude_dir=None):
     if not results:
         # 目录还不存在，返回两个候选让调用方等待
         base = real_dir.lstrip("/").replace("/", "-")
-        old_style = "-" + base.replace("_", "-")
-        new_style = base
+        old_style = "-" + base.replace("_", "-").replace(".", "-")
+        new_style = base.replace(".", "-")
         projects_dir = os.path.join(claude_dir, "projects") if claude_dir else ""
         results = [
             (os.path.join(projects_dir, old_style), extract_message),
@@ -428,10 +428,20 @@ def setup_logging(log_file):
     return logger
 
 
+def tmux_target(session_name):
+    """session 类命令的目标名，= 前缀为精确匹配"""
+    return f"={session_name}"
+
+
+def tmux_pane_target(session_name):
+    """pane 类命令的目标名，冒号结尾取该会话的活动 window/pane"""
+    return f"={session_name}:"
+
+
 def check_tmux_session(session_name):
     """检查 tmux session 是否存在"""
     return subprocess.run(
-        ["tmux", "has-session", "-t", session_name],
+        ["tmux", "has-session", "-t", tmux_target(session_name)],
         stdout=subprocess.PIPE, stderr=subprocess.PIPE,
     ).returncode == 0
 
@@ -444,14 +454,16 @@ def send_to_tmux(session_name, text):
     2. 文本与 Enter 分两次 send-keys，间隔 0.8s
     3. 2s 后校验：pane 尾部仍看到该文本说明未提交，补发 Enter
     """
+    target = tmux_pane_target(session_name)
+
     def _keys(*keys):
         subprocess.run(
-            ["tmux", "send-keys", "-t", session_name, *keys],
+            ["tmux", "send-keys", "-t", target, *keys],
             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         )
 
     r = subprocess.run(
-        ["tmux", "display-message", "-p", "-t", session_name, "#{pane_in_mode}"],
+        ["tmux", "display-message", "-p", "-t", target, "#{pane_in_mode}"],
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True,
     )
     if r.returncode == 0 and r.stdout.strip() == "1":
@@ -469,7 +481,7 @@ def send_to_tmux(session_name, text):
     time.sleep(2)
 
     r = subprocess.run(
-        ["tmux", "capture-pane", "-t", session_name, "-p"],
+        ["tmux", "capture-pane", "-t", target, "-p"],
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True,
     )
     if r.returncode == 0 and any(text in line for line in r.stdout.splitlines()[-6:]):
@@ -489,7 +501,7 @@ def is_waiting_approval(session_name):
     """
     # 1. 排除 copy/view-mode
     r = subprocess.run(
-        ["tmux", "display-message", "-p", "-t", session_name, "#{pane_in_mode}"],
+        ["tmux", "display-message", "-p", "-t", tmux_pane_target(session_name), "#{pane_in_mode}"],
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True,
     )
     if r.returncode != 0 or r.stdout.strip() == "1":
@@ -497,7 +509,7 @@ def is_waiting_approval(session_name):
 
     # 2-3. 截屏检测活跃弹窗特征
     r = subprocess.run(
-        ["tmux", "capture-pane", "-t", session_name, "-p", "-S", "-30"],
+        ["tmux", "capture-pane", "-t", tmux_pane_target(session_name), "-p", "-S", "-30"],
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True,
     )
     if r.returncode != 0:
@@ -512,7 +524,7 @@ def is_waiting_approval(session_name):
 def send_approve(session_name):
     """通过 tmux 发送 Enter 自动确认权限请求"""
     subprocess.run(
-        ["tmux", "send-keys", "-t", session_name, "Enter"],
+        ["tmux", "send-keys", "-t", tmux_pane_target(session_name), "Enter"],
         stdout=subprocess.PIPE, stderr=subprocess.PIPE,
     )
 

@@ -27,7 +27,7 @@ from urllib.request import urlopen
 from tmux_claude_log import (
     ProjectWatcher, watch_loop, setup_logging as setup_claude_logging,
     project_dir_to_internal, send_approve, send_to_tmux,
-    check_tmux_session, extract_message,
+    check_tmux_session, extract_message, tmux_target, tmux_pane_target,
 )
 
 try:
@@ -536,7 +536,7 @@ class ClaudeBot(botpy.Client):
             n = int(content)
             self._external_logger.info(f"权限选择: {content}")
             for _ in range(n - 1):
-                subprocess.run(["tmux", "send-keys", "-t", self.session, "Down"], capture_output=True)
+                subprocess.run(["tmux", "send-keys", "-t", tmux_pane_target(self.session), "Down"], capture_output=True)
                 time.sleep(0.05)
             send_approve(self.session)
             return
